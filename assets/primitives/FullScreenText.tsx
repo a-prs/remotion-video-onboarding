@@ -1,6 +1,6 @@
 import { useCurrentFrame, useVideoConfig, interpolate, spring } from "remotion";
-import { style } from "../../stylekit";
-import { ZONES, LEGIBLE } from "../format";
+import { style } from "../stylekit";
+import { ZONES, LEGIBLE } from "./format";
 
 /**
  * FullScreenText — ONE huge centered statement (hook / punchline). Montserrat

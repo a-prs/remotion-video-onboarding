@@ -1,7 +1,7 @@
 import { useCurrentFrame, useVideoConfig, interpolate, spring } from "remotion";
-import { style } from "../../stylekit";
-import { ZONES, LEGIBLE } from "../format";
-import { LogoMark } from "../LogoMark";
+import { style } from "../stylekit";
+import { ZONES, LEGIBLE } from "./format";
+import { LogoMark } from "./LogoMark";
 
 /**
  * IconTitle — overlay (Mode A) section marker: a centered mark (brand logo or

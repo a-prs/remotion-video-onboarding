@@ -1,6 +1,6 @@
 import { useCurrentFrame, useVideoConfig, interpolate } from "remotion";
 import { noise2D } from "@remotion/noise";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 
 /**
  * ChaosNoise — cards jitter and overlap into a «каша» via smooth Perlin noise, not

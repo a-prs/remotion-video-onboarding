@@ -4,7 +4,7 @@ import {
   interpolate,
   spring,
 } from "remotion";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 
 /**
  * ChatBubbles (vertical) — a chat dialogue that types itself out, ported from the

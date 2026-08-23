@@ -1,6 +1,6 @@
 import { useCurrentFrame, useVideoConfig, interpolate, spring } from "remotion";
-import { style } from "../../stylekit";
-import { LogoMark } from "../LogoMark";
+import { style } from "../stylekit";
+import { LogoMark } from "./LogoMark";
 
 /**
  * ChapterCards — numbered cards revealed one by one, stacked vertically (9:16

@@ -1,6 +1,6 @@
 import { useCurrentFrame, useVideoConfig, interpolate, spring } from "remotion";
 import { interpolatePath } from "@remotion/paths";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 
 /**
  * PathMorph — «превращается / становится / переходит из…в / эволюция» (Andrey,

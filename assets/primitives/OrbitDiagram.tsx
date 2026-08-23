@@ -1,7 +1,7 @@
 import { useCurrentFrame, useVideoConfig, interpolate, spring } from "remotion";
-import { style } from "../../stylekit";
-import { ZONES, LEGIBLE } from "../format";
-import { LogoMark } from "../LogoMark";
+import { style } from "../stylekit";
+import { ZONES, LEGIBLE } from "./format";
+import { LogoMark } from "./LogoMark";
 
 /**
  * OrbitDiagram — a central core (teal-bordered disc) with items arranged AROUND

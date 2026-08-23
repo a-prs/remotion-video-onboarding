@@ -1,7 +1,7 @@
 import { useCurrentFrame, useVideoConfig, interpolate, spring } from "remotion";
 import { evolvePath } from "@remotion/paths";
 import { fitText } from "@remotion/layout-utils";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 import { SAFE_W } from "./safe";
 
 // Font size that keeps `text` inside `w` px on one line (capped at base), so a

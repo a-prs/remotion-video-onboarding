@@ -1,6 +1,6 @@
 import { useCurrentFrame, useVideoConfig, interpolate, spring, random } from "remotion";
 import { fitText } from "@remotion/layout-utils";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 
 // Shrink a centred label so it never spills past the frame (Andrey 2026-07-23).
 function fitFS(text: string, w: number, base: number, fam: string): number {

@@ -5,7 +5,7 @@ import {
   spring,
 } from "remotion";
 import { evolvePath, getLength, getPointAtLength, getTangentAtLength } from "@remotion/paths";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 
 /**
  * ConnectorSpine — the "connected thought" primitive (Andrey, 2026-07-23).
@@ -122,9 +122,13 @@ const Connector: React.FC<{
   });
   const { strokeDasharray, strokeDashoffset } = evolvePath(progress, d);
   // Arrowhead: sit at the path end, rotated along the tangent.
+  // getPointAtLength/getTangentAtLength return null past/AT the path's own
+  // length (Remotion v5+ API change) - querying exactly `len` always hit
+  // this, so clamp just under it.
   const len = getLength(d);
-  const tip = getPointAtLength(d, len);
-  const tan = getTangentAtLength(d, len);
+  const tipLen = Math.max(0, len - 0.01);
+  const tip = getPointAtLength(d, tipLen) ?? { x: 0, y: 0 };
+  const tan = getTangentAtLength(d, tipLen) ?? { x: 1, y: 0 };
   const ang = (Math.atan2(tan.y, tan.x) * 180) / Math.PI;
   const headOp = interpolate(progress, [0.82, 1], [0, 1], {
     extrapolateLeft: "clamp",

@@ -1,7 +1,7 @@
 import { useCurrentFrame, useVideoConfig, interpolate } from "remotion";
 import { evolvePath, getLength, getPointAtLength } from "@remotion/paths";
 import { fitText } from "@remotion/layout-utils";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 import { SAFE_W } from "./safe";
 
 // Shrink a node label so it never runs past the frame edge (Andrey 2026-07-23).
@@ -70,7 +70,9 @@ export const SerpentineLens: React.FC<Props> = ({
     extrapolateRight: "clamp",
   });
   const { strokeDasharray, strokeDashoffset } = evolvePath(drawP, d);
-  const lens = getPointAtLength(d, total * rideP);
+  // getPointAtLength returns null past/at the path's own length (Remotion v5+
+  // API change) - clamp just under `total` so the end-of-path frame never hits it.
+  const lens = getPointAtLength(d, Math.min(total * rideP, total - 0.01)) ?? { x: 0, y: 0 };
   // Nearest node to the lens = the "focused" one.
   const focus = pts.reduce(
     (best, p, i) => {

@@ -1,7 +1,7 @@
 import { useCurrentFrame, useVideoConfig, interpolate } from "remotion";
 import { evolvePath, getLength, getPointAtLength } from "@remotion/paths";
 import { fitText } from "@remotion/layout-utils";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 
 function fitFS(text: string, w: number, base: number): number {
   const f = fitText({ text: text || "", withinWidth: w, fontFamily: style.fonts.mono, fontWeight: 500 });
@@ -52,7 +52,9 @@ export const LineChart: React.FC<Props> = ({
     extrapolateRight: "clamp",
   });
   const { strokeDasharray, strokeDashoffset } = evolvePath(p, d);
-  const dot = getPointAtLength(d, total * p);
+  // getPointAtLength returns null past/at the path's own length (Remotion v5+
+  // API change) - clamp just under `total` so the end-of-path frame never hits it.
+  const dot = getPointAtLength(d, Math.min(total * p, total - 0.01)) ?? { x: 0, y: 0 };
 
   return (
     <svg width={W} height={H} style={{ overflow: "visible" }}>

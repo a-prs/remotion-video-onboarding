@@ -1,7 +1,7 @@
 import { useCurrentFrame, useVideoConfig, interpolate, spring } from "remotion";
-import { style } from "../../stylekit";
-import { ZONES } from "../format";
-import { LogoMark } from "../LogoMark";
+import { style } from "../stylekit";
+import { ZONES } from "./format";
+import { LogoMark } from "./LogoMark";
 
 /**
  * CodeCompare — two stacked IDE-ish panes (before → after) reflowed VERTICAL:

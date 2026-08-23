@@ -1,7 +1,7 @@
 import { useCurrentFrame, useVideoConfig, interpolate, spring } from "remotion";
 import { getLength, getPointAtLength } from "@remotion/paths";
 import { measureText } from "@remotion/layout-utils";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 import { SAFE_W } from "./safe";
 
 /**
@@ -74,7 +74,9 @@ export const PipelineFlow: React.FC<Props> = ({ steps = DEFAULT_STEPS, delaySec 
   const beltD = `M ${cx[0]} ${Y} L ${cx[n - 1]} ${Y}`;
   const total = getLength(beltD) || 1;
   const t = ((frame - start) % loop) / loop;
-  const packet = getPointAtLength(beltD, total * t);
+  // getPointAtLength returns null past/at the path's own length (Remotion v5+
+  // API change) - clamp just under `total` so the end-of-path frame never hits it.
+  const packet = getPointAtLength(beltD, Math.min(total * t, total - 0.01)) ?? { x: 0, y: 0 };
   const spin = ((frame - start) / fps) * 90;
 
   return (

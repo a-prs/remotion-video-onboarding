@@ -4,8 +4,8 @@ import {
   interpolate,
   spring,
 } from "remotion";
-import { style } from "../../stylekit";
-import { LEGIBLE } from "../format";
+import { style } from "../stylekit";
+import { LEGIBLE } from "./format";
 
 /**
  * DonutChart — animated ring with a center value. Vertical-friendly (big).

@@ -4,7 +4,7 @@ import {
   interpolate,
   spring,
 } from "remotion";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 
 /**
  * NodeMap — the "control map" motif from the references: agent/skill nodes on a

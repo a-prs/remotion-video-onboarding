@@ -4,7 +4,7 @@ import {
   interpolate,
   spring,
 } from "remotion";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 
 /**
  * CodeAppear (vertical) — a code window whose lines slide in one by one with naive

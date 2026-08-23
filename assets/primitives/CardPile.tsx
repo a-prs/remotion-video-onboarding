@@ -1,7 +1,7 @@
 import { useCurrentFrame, useVideoConfig, interpolate, spring } from "remotion";
-import { style } from "../../stylekit";
-import { ZONES, LEGIBLE } from "../format";
-import { LogoMark } from "../LogoMark";
+import { style } from "../stylekit";
+import { ZONES, LEGIBLE } from "./format";
+import { LogoMark } from "./LogoMark";
 
 /**
  * CardPile — a small collection of concept cards that appear stacking up in a

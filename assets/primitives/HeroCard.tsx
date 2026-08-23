@@ -1,7 +1,7 @@
 import { useCurrentFrame, useVideoConfig, interpolate, spring } from "remotion";
-import { style } from "../../stylekit";
-import { ZONES, LEGIBLE } from "../format";
-import { LogoMark } from "../LogoMark";
+import { style } from "../stylekit";
+import { ZONES, LEGIBLE } from "./format";
+import { LogoMark } from "./LogoMark";
 
 /**
  * HeroCard — ONE deep-dive card centered in the frame. A mono category label, a

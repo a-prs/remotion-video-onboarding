@@ -4,8 +4,8 @@ import {
   interpolate,
   spring,
 } from "remotion";
-import { style } from "../../stylekit";
-import { LEGIBLE } from "../format";
+import { style } from "../stylekit";
+import { LEGIBLE } from "./format";
 
 /**
  * BarCompare — horizontal bars that grow in, staggered. Vertical-friendly:

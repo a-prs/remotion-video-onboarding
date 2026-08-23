@@ -4,7 +4,7 @@ import {
   interpolate,
   spring,
 } from "remotion";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 
 /**
  * NumberedRows — the "01 / 02 / 03" tabular list from the references. Mono

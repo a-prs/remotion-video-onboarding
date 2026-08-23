@@ -1,6 +1,6 @@
 import { useCurrentFrame, useVideoConfig, interpolate, spring } from "remotion";
 import { fitText } from "@remotion/layout-utils";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 
 function fitFS(text: string, w: number, base: number): number {
   const f = fitText({ text: text || "", withinWidth: w, fontFamily: style.fonts.mono, fontWeight: 500 });

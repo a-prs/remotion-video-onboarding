@@ -9,7 +9,7 @@ import {
   Bracket,
 } from "@remotion/rough-notation";
 import { fitText } from "@remotion/layout-utils";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 import { SAFE_W } from "./safe";
 
 /**

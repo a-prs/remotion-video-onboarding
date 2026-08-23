@@ -1,7 +1,7 @@
 import { useCurrentFrame, useVideoConfig, interpolate, spring } from "remotion";
 import { evolvePath } from "@remotion/paths";
 import { fitText } from "@remotion/layout-utils";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 
 /**
  * BeforeAfter — «было/стало / до/после / раньше-теперь» (critic, 2026-07-23):

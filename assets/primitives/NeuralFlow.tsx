@@ -1,6 +1,6 @@
 import { useCurrentFrame, useVideoConfig, interpolate, spring } from "remotion";
-import { style } from "../../stylekit";
-import { ZONES, LEGIBLE } from "../format";
+import { style } from "../stylekit";
+import { ZONES, LEGIBLE } from "./format";
 
 /**
  * NeuralFlow — a vertical pipeline: input label at top, a descending chain of

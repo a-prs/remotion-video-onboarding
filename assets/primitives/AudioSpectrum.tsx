@@ -1,6 +1,6 @@
 import { useCurrentFrame, useVideoConfig, interpolate } from "remotion";
 import { useWindowedAudioData, visualizeAudio } from "@remotion/media-utils";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 import { SAFE_W } from "./safe";
 
 /**

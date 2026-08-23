@@ -1,7 +1,7 @@
 import { useCurrentFrame, useVideoConfig, interpolate, spring } from "remotion";
-import { style } from "../../stylekit";
-import { ZONES, LEGIBLE } from "../format";
-import { V_GLASS } from "../glass";
+import { style } from "../stylekit";
+import { ZONES, LEGIBLE } from "./format";
+import { V_GLASS } from "./glass";
 
 /**
  * QuoteCard — overlay (Mode A) quote on a frosted glass plate (backdrop-blur,

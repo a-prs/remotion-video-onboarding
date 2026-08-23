@@ -1,5 +1,5 @@
 import { useCurrentFrame, useVideoConfig, interpolate, spring } from "remotion";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 
 /**
  * Swarm — one dot MULTIPLIES into a grid/swarm of copies (critic, 2026-07-23): for

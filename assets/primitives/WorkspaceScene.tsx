@@ -1,6 +1,6 @@
 import { useCurrentFrame, useVideoConfig, interpolate, spring } from "remotion";
-import { style } from "../../stylekit";
-import { ZONES } from "../format";
+import { style } from "../stylekit";
+import { ZONES } from "./format";
 
 /**
  * WorkspaceScene — a simulated desktop reflowed VERTICAL. Top: a file-tree panel

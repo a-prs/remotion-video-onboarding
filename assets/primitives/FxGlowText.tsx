@@ -1,6 +1,6 @@
 import { useCurrentFrame, useVideoConfig, interpolate, HtmlInCanvas } from "remotion";
 import { glow } from "@remotion/effects/glow";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 import { SAFE_W } from "./safe";
 
 /**
@@ -52,6 +52,8 @@ export const FxGlowText: React.FC<Props> = ({
 
   return (
     <HtmlInCanvas
+      width={SAFE_W}
+      height={400}
       style={{ width: SAFE_W, height: 400 }}
       effects={[glow({ opacity: bloom, color: accent })]}
     >

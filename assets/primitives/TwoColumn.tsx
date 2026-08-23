@@ -4,7 +4,7 @@ import {
   interpolate,
   spring,
 } from "remotion";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 
 /**
  * TwoColumn — the "Human vs Agent" comparison from the references. Two bordered

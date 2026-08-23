@@ -3,7 +3,7 @@ import {
   useVideoConfig,
   interpolate,
 } from "remotion";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 
 /**
  * Terminal — a chrome window with lines that type/appear in sequence.

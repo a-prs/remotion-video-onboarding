@@ -1,8 +1,8 @@
 import { useCurrentFrame, useVideoConfig, interpolate, spring } from "remotion";
-import { style } from "../../stylekit";
-import { ZONES, LEGIBLE } from "../format";
-import { V_GLASS } from "../glass";
-import { LogoMark } from "../LogoMark";
+import { style } from "../stylekit";
+import { ZONES, LEGIBLE } from "./format";
+import { V_GLASS } from "./glass";
+import { LogoMark } from "./LogoMark";
 
 /**
  * IconPopup — overlay (Mode A) accent pill: a small horizontal row of a mark

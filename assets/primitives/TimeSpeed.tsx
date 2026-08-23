@@ -1,5 +1,5 @@
 import { useCurrentFrame, useVideoConfig, interpolate, spring } from "remotion";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 
 /**
  * TimeSpeed — «за 5 минут вместо 3 часов» (critic, 2026-07-23): the value-prop

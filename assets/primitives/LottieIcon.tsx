@@ -10,7 +10,7 @@ import {
   cancelRender,
 } from "remotion";
 import { Lottie, LottieAnimationData } from "@remotion/lottie";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 import { SAFE_W } from "./safe";
 
 /**

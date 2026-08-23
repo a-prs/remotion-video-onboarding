@@ -1,5 +1,5 @@
 import { useCurrentFrame, useVideoConfig, interpolate, spring } from "remotion";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 
 /**
  * Spotlight — dims everything, lights up ONE card (Andrey/critic, 2026-07-23):

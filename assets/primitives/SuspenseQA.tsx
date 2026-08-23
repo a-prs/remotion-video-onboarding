@@ -1,5 +1,5 @@
 import { useCurrentFrame, useVideoConfig, interpolate, spring } from "remotion";
-import { style } from "../../stylekit";
+import { style } from "../stylekit";
 import { SAFE_W } from "./safe";
 
 const WRAP = { overflowWrap: "anywhere" as const, wordBreak: "break-word" as const, lineHeight: 1.15 };
