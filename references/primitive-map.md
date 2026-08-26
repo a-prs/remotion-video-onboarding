@@ -143,30 +143,25 @@ FRAME_ROOT-примитивы (Wave 1-4 2026-08-10: интерфейсы, ове
 |---|---|---|---|
 | `finish` | GrainVignette | глобальная пост-обработка на весь ролик (грейн/виньетка) | grain, vignette, intensity |
 
-**Служебные акты** (движок/пайплайн, режиссёр не эмитит как обычный `type`): `subtitles` (караоке-слова
-→ SubtitleTrack, поддерживает `skin`), `sfx` (звук, поле `sfx` на акте → SfxTrack), `noface`
-(faceless-режим), `camera` (CameraFX — режиссёрская камера + оранжевые lightleak-склейки).
+**Субтитры** — не маркер-триггер, а всегда-включённый оверлей: `assets/primitives/SubtitleTrack.tsx`
+(karaoke-группировка по словам из `cut_words.json`, см. Шаг 6 в `SKILL.md`).
 
-**Flow-переходы** (поле `flow` на акте, faceless по умолчанию): `zoom` (зум-сквозь, продолжение мысли),
-`cut` (листаем, новый пункт). Расширяемы (iris/clockWipe/pixelate/lightleak) — см. transitions.ts.
-**Транзишены битов внутри block** (`transition`): `stack` (дефолт), `replace`, `morph`.
+> ⚠️ Эта таблица собрана по образцу внутреннего движка Андрея (`VerticalFromPlan`, JSON-план
+> `{type, props}` на акты). У этого публичного скилла ТАКОГО движка нет — здесь нет `plan.json`,
+> `acts`, `sfx`-трека, `CameraFX`, `noface`-режима, `block`/`beats`/`transitions.ts` и т.п. Строка
+> в этой таблице реальна для тебя, только если файл действительно лежит в `assets/primitives/` —
+> проверь `ls assets/primitives/` прежде чем ссылаться на компонент, которого может не быть.
+> Примитивы сюда добавляются вручную через `/remotion-markup`, а не через плановый движок.
 
-## Как добавить/обновить примитив (реальный процесс, без sudo)
-1. Лист-компонент: `apps/video-montage/remotion/src/vertical/components/<Name>.tsx` (чистый Remotion:
-   spring/interpolate от локального кадра, `random('seed')` вместо `Math.random`, без useState/setTimeout/CSS-анимаций).
-2. Регистрация: импорт + `case "<type>":` в `apps/video-montage/remotion/src/vertical/VerticalFromPlan.tsx`
-   (`renderRaw`). Если примитив несёт СВОЮ подложку/рамку — добавь в `NO_PLATE`. Full-frame (интерфейс/фон/
-   финиш) — добавь в `FRAME_ROOT` (фоны → `FR_BG`, поверх сабов → `FR_TOP`).
-3. Промпт: занеси `type`+props в `agents/montage-vertical/plan_prompt.md` и `plan_prompt_noface.md`
-   (маркер→действие, tier, mode) + строку в реестр этого файла.
-4. Аудит: `python3 agents/montage-vertical/audit_rulebook.py` — должен пройти без diff.
-5. **Деплой БЕЗ root/sudo/systemctl.** Прод-рендер (`apps/video-montage/remotion/server.js`, :8082) и
-   dev-серверы (:8085/86/87) — office-owned, бандлят `src/index.ts` с диска на живую. Ре-бандл:
-   `python3 agents/montage-vertical/rebundle_renderer.py` (пере-сохраняет банк-компонент → `init()` →
-   свежий бандл, без остановки сервиса). Проверка: `GET :8082/health` → ready + смоук-рендер нового типа.
-
-> ⚠️ Старая инструкция про `deploy_vertical_bank.sh` + sudo + рестарт и «источник правды = apps/remocn»
-> — НЕВЕРНА. Источник правды рендера = `apps/video-montage/remotion` (прод бандлит именно его).
-> `apps/remocn` — только Studio-референс внешнего вида, НЕ авторитетен для рендера (отстаёт на десятки типов).
+## Как добавить/обновить примитив (для ЭТОГО скилла — файлы лежат в самом проекте пользователя)
+1. Компонент: `assets/primitives/<Name>.tsx` (чистый Remotion: `useCurrentFrame`/`interpolate`/`spring`
+   от локального кадра, без `useState`/`setTimeout`/CSS-анимаций — см. любой существующий файл рядом
+   как образец, например `SubtitleTrack.tsx`).
+2. Подключение: обычный React-импорт в композицию пользователя (`/remotion-markup` знает, как это
+   сделать) — нет `case "<type>":`, нет реестра, который парсит код, подключение делается вручную.
+3. Занеси строку в реестр этого файла (`primitive-map.md`) и, если примитив триггерится по слову в
+   речи, — в `marker-action-library.md` (маркер → действие).
+4. Рендер: обычный `/remotion-render`/`npx remotion render` — нет отдельного сервера/порта, никакого
+   деплоя/рестарта не требуется, это часть проекта пользователя.
 
 Компаньон по ДИЗАЙНУ действий (как выглядит анимация) — `marker-action-library.md`.
