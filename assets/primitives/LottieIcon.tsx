@@ -7,7 +7,6 @@ import {
   staticFile,
   delayRender,
   continueRender,
-  cancelRender,
 } from "remotion";
 import { Lottie, LottieAnimationData } from "@remotion/lottie";
 import { style } from "../stylekit";
@@ -15,12 +14,17 @@ import { SAFE_W } from "./safe";
 
 /**
  * LottieIcon — a professionally-animated icon (gear, check, loader, …) from a
- * Lottie JSON, instead of hand-drawing every icon primitive (bank v2,
- * 2026-07-27). Loads a bundled JSON from public/lottie by name, or a remote URL.
- * Wrapped in delayRender/continueRender so the render waits for the asset.
+ * Lottie JSON. `src` = a name in `public/lottie/<name>.json`, or a full
+ * https URL. Wrapped in delayRender/continueRender so the render waits for
+ * the asset.
  *
- * Plan act {type:"lottieIcon", props:{ src, size?, caption?, loop? }}.
- * `src` = a name in public/lottie (e.g. "gear") or a full https URL.
+ * This public repo ships NO bundled Lottie files — `public/lottie/` does
+ * not exist by default, so the `src="gear"` default has nothing to load
+ * unless the user's project has one. Either use a full `https://` URL to a
+ * real Lottie JSON (e.g. from lottiefiles.com, with the user's OK), or drop
+ * a JSON file into `public/lottie/` first — don't assume the named presets
+ * already exist. On load failure this renders nothing instead of crashing
+ * the render (see the catch below).
  */
 type Props = {
   src?: string;
@@ -47,12 +51,21 @@ export const LottieIcon: React.FC<Props> = ({
   useEffect(() => {
     const url = src.startsWith("http") ? src : staticFile(`lottie/${src}.json`);
     fetch(url)
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`lottie fetch ${r.status}: ${url}`);
+        return r.json();
+      })
       .then((json) => {
         setData(json);
         continueRender(handle);
       })
-      .catch((err) => cancelRender(err));
+      .catch((err) => {
+        // Fail SAFE, not loud: this repo ships no bundled Lottie files, so a
+        // missing public/lottie/<name>.json is expected, not a crash-worthy
+        // bug — render nothing instead of cancelRender()-ing the whole video.
+        console.warn(`[LottieIcon] ${err} — skipping this icon`);
+        continueRender(handle);
+      });
   }, [handle, src]);
 
   const enter = spring({

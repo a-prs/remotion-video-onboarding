@@ -6,21 +6,28 @@ import {
   Img,
   staticFile,
 } from "remotion";
+import { useState } from "react";
 import { style } from "../stylekit";
 
 /**
- * LogoMark — renders a real brand logo from the office logo bank
- * (public/logos/<slug>.svg, pre-recolored for the dark flat theme).
+ * LogoMark — renders a brand logo SVG from `public/logos/<slug>.svg`.
+ *
+ * This public repo ships NO logo files — `public/logos/` does not exist by
+ * default. `brand=` is only useful once the user (or you, on their behalf)
+ * has actually placed a matching `<slug>.svg` under `public/logos/` in
+ * their project — third-party brand marks aren't bundled here on purpose
+ * (redistribution/trademark risk), so don't suggest `brand=` as if a logo
+ * bank already exists. If asked for a brand icon and no SVG is on disk,
+ * either fetch/create one with the user's OK and drop it in `public/logos/`
+ * first, or skip the logo and let the caller's emoji/text fallback carry it.
+ * Fails safe either way: a missing/broken SVG renders nothing (see
+ * `onError` below), not a broken-image icon.
  *
  * Two uses:
  *  1. Standalone act — a centered mark with an optional caption (brand name).
  *  2. Injected into another component's icon slot (ChapterCards, HeroCard,
  *     DiagramFlow nodes, IconTitle…) via `<LogoMark brand="openai" size={64}
  *     inline />` — replaces the generic emoji with the actual logo.
- *
- * `brand` is a bank slug (openai, anthropic, claude, google, github, n8n,
- * youtube, telegram, googlegemini…). Unknown slugs render nothing (caller
- * should fall back to an emoji icon).
  */
 
 type Props = {
@@ -49,11 +56,20 @@ export const LogoMark: React.FC<Props> = ({
   const { fps } = useVideoConfig();
   const start = Math.round(delaySec * fps);
   const local = Math.max(0, frame - start);
+  const [broken, setBroken] = useState(false);
 
   const src = staticFile(`logos/${(brand || "").toLowerCase()}.svg`);
+  if (broken) return null;
+  const img = (
+    <Img
+      src={src}
+      style={{ height: size, width: "auto", objectFit: "contain" }}
+      onError={() => setBroken(true)}
+    />
+  );
 
   if (inline) {
-    return <Img src={src} style={{ height: size, width: "auto", objectFit: "contain" }} />;
+    return img;
   }
 
   if (frame < start) return null;
@@ -80,7 +96,7 @@ export const LogoMark: React.FC<Props> = ({
         transform: `scale(${scale})`,
       }}
     >
-      <Img src={src} style={{ height: size, width: "auto", objectFit: "contain" }} />
+      {img}
       {caption && (
         <div
           style={{
