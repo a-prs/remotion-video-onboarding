@@ -25,6 +25,8 @@ npx skills add a-prs/remotion-video-onboarding --skill '*' --agent claude-code -
 
 ```
 SKILL.md                    — весь сценарий, точка входа
+VERSION                      — текущая версия (скилл сверяет с этим же файлом в репозитории)
+CHANGELOG.md                 — что поменялось между версиями
 scripts/
   cut_silence.py             — вырезание пауз по реальной тишине в аудио
   clean_audio.py              — диагностика и выравнивание голоса
