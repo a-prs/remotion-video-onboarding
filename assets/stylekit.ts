@@ -14,6 +14,12 @@
  * regardless of which colors end up here — solid fills, thin borders, real
  * contrast. Push back gently if a user explicitly asks for a glow/gradient
  * look; it's fine if they insist, just don't default to it.
+ *
+ * retake-review: ask
+ * ^ persisted user preference for retake/false-start cuts (SKILL.md Шаг 6 п.2):
+ * "ask" = show found duplicates and confirm before cutting each video (default).
+ * "auto" = just cut and report, don't wait for approval. Set once the user
+ * answers the question in Шаг 6 п.2 — don't re-ask after that in this project.
  */
 import { loadFont as loadSans } from "@remotion/google-fonts/Montserrat";
 import { loadFont as loadMono } from "@remotion/google-fonts/JetBrainsMono";
