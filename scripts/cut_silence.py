@@ -152,6 +152,27 @@ def retime_words_clamped(words: list, segs: list) -> list:
     return out
 
 
+def snap_cut_boundaries(cuts: list, silences: list, max_snap: float) -> list:
+    """Widen each [cs,ce] retake cut to the edge of an adjacent real silence
+    (from detect_silences) within max_snap seconds, so the splice lands in
+    dead air instead of mid-word/mid-breath. Only ever WIDENS a cut, never
+    shrinks it — safe by construction, can't eat into wanted speech."""
+    if not silences or not cuts:
+        return cuts
+    sils = sorted(silences)
+    out = []
+    for cs, ce in cuts:
+        ns, ne = cs, ce
+        for s, e in sils:
+            if s <= cs <= e or 0 <= cs - e <= max_snap:
+                ns = min(ns, s)
+        for s, e in sils:
+            if s <= ce <= e or 0 <= s - ce <= max_snap:
+                ne = max(ne, e)
+        out.append([ns, ne])
+    return out
+
+
 def subtract_spans(keep: list, cuts: list) -> list:
     """Remove `cuts` spans (retakes/false starts) from the kept intervals."""
     if not cuts:
@@ -264,6 +285,13 @@ def main() -> int:
                          "durations. --gap becomes the min silence length to remove.")
     ap.add_argument("--noise", type=float, default=-30.0, help="silence threshold dB (audio mode)")
     ap.add_argument("--cut-spans", default="", help="retakes.json {cuts:[[s,e]]} — also remove these")
+    ap.add_argument("--snap-window", type=float, default=0.3,
+                    help="max sec to widen a retake cut into adjacent real silence "
+                         "for a clean splice (0 disables snapping)")
+    ap.add_argument("--snap-min-sil", type=float, default=0.12,
+                    help="min silence length (sec) to detect for boundary-snapping — "
+                         "finer than --gap, since this only widens cut edges, it "
+                         "doesn't remove pauses on its own")
     ap.add_argument("--level", action="store_true",
                     help="after cutting, run clean_audio.py on the output (loudnorm -14 LUFS "
                          "+ denoise + de-hum), in place. Non-fatal — keeps the raw cut on failure.")
@@ -282,6 +310,9 @@ def main() -> int:
     if args.cut_spans:
         cd = json.loads(Path(args.cut_spans).read_text())
         cuts = cd.get("cuts", cd) if isinstance(cd, dict) else cd
+        if cuts and args.snap_window > 0:
+            snap_sils = detect_silences(args.video, args.noise, args.snap_min_sil)
+            cuts = snap_cut_boundaries(cuts, snap_sils, args.snap_window)
         segs = subtract_spans(segs, cuts)
     kept = sum(e - s for s, e in segs)
     print(f"[{'audio' if args.audio else 'words'}] keep {len(segs)} segs, {kept:.1f}s of {dur:.1f}s "
