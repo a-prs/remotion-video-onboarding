@@ -20,6 +20,14 @@
  * "ask" = show found duplicates and confirm before cutting each video (default).
  * "auto" = just cut and report, don't wait for approval. Set once the user
  * answers the question in Шаг 6 п.2 — don't re-ask after that in this project.
+ *
+ * final-review: ask
+ * ^ persisted user preference for the final report+preview gate before render
+ * (SKILL.md Шаг 7): "ask" = show the decisions report (duplicates/pauses/
+ * graphics) + preview, wait for confirmation before final render (default).
+ * "auto" = skip the wait, still say the report out loud, then render. Set
+ * once the user answers the question in Шаг 7 — don't re-ask after that in
+ * this project.
  */
 import { loadFont as loadSans } from "@remotion/google-fonts/Montserrat";
 import { loadFont as loadMono } from "@remotion/google-fonts/JetBrainsMono";
