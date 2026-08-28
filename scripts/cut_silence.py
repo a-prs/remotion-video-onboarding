@@ -123,6 +123,24 @@ def keep_from_audio(video: str, dur: float, noise_db: float, min_sil: float,
     return [s for s in keep if s[1] - s[0] > 0.05]
 
 
+def drop_words_in_cuts(words: list, cuts: list) -> list:
+    """Words whose center falls inside a RETAKE cut are gone for good — the
+    take that said them no longer exists in the output at all. This is
+    different from a pause-removed word (still real, surviving speech, just
+    near an imprecise silence-gap edge) which retime_words_clamped() below
+    correctly magnetizes to the nearest kept edge instead of dropping. If a
+    retake-cut word goes through that same clamping instead of being dropped
+    here first, it collapses to a near-zero-length span at the cut edge and
+    SubtitleTrack draws a phantom line for audio that no longer plays (seen
+    on real material: 7 words collapsed into a 0.05s sliver at 19.00-19.05)."""
+    if not cuts:
+        return words
+    def in_cut(w: dict) -> bool:
+        mid = (w["start"] + w["end"]) / 2
+        return any(s <= mid <= e for s, e in cuts)
+    return [w for w in words if not in_cut(w)]
+
+
 def retime_words_clamped(words: list, segs: list) -> list:
     """Map words onto the cut timeline; a word landing inside a removed (silent)
     span is SNAPPED to the nearest kept edge instead of dropped — no lost subs."""
@@ -319,7 +337,7 @@ def main() -> int:
           f"(pauses cut {dur - pause_kept:.1f}s, retakes cut {pause_kept - kept:.1f}s)",
           file=sys.stderr)
     cut_video(args.video, segs, args.out_video)
-    cut_words = retime(words, segs)
+    cut_words = retime(drop_words_in_cuts(words, cuts), segs)
     Path(args.out_words).write_text(json.dumps(
         {"words": cut_words, "duration": round(kept, 2),
          "segments_kept": [[round(s, 3), round(e, 3)] for s, e in segs]},

@@ -55,7 +55,7 @@ export const FxGlowText: React.FC<Props> = ({
       width={SAFE_W}
       height={400}
       style={{ width: SAFE_W, height: 400 }}
-      effects={[glow({ opacity: bloom, color: accent })]}
+      effects={[glow({ intensity: bloom, color: accent })]}
     >
       <div
         style={{

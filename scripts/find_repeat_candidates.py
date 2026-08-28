@@ -56,25 +56,30 @@ def normalize(word: str) -> str:
 def chunk_phrases(words: list, phrase_gap: float) -> list:
     """Split words into phrase-like chunks on pauses > phrase_gap seconds —
     a rough proxy for 'сmысловая единица' good enough for candidate-matching
-    (the LLM step still judges actual sentence boundaries)."""
+    (the LLM step still judges actual sentence boundaries). Keeps each
+    chunk's [start_idx, end_idx) into the original `words` list so callers
+    can go straight to word-index pairs for scripts/refine_cuts.mjs without
+    re-counting through the transcript by hand."""
     if not words:
         return []
-    runs, cur = [], [words[0]]
+    runs, cur = [], [(0, words[0])]
     for i in range(1, len(words)):
         gap = words[i]["start"] - words[i - 1]["end"]
         if gap > phrase_gap:
             runs.append(cur)
             cur = []
-        cur.append(words[i])
+        cur.append((i, words[i]))
     if cur:
         runs.append(cur)
     out = []
     for run in runs:
-        norm = [normalize(w["word"]) for w in run if normalize(w["word"])]
+        run_words = [w for _, w in run]
+        norm = [normalize(w["word"]) for w in run_words if normalize(w["word"])]
         if not norm:
             continue
-        out.append({"start": run[0]["start"], "end": run[-1]["end"],
-                    "text": " ".join(w["word"] for w in run).strip(),
+        out.append({"start": run_words[0]["start"], "end": run_words[-1]["end"],
+                    "start_idx": run[0][0], "end_idx": run[-1][0],
+                    "text": " ".join(w["word"] for w in run_words).strip(),
                     "norm": norm})
     return out
 
@@ -108,6 +113,7 @@ def find_candidates(chunks: list, max_gap: float, min_words: int) -> list:
                 "kind": "prefix" if "prefix" in kinds else "exact",
                 "occurrences": [
                     {"start": round(chunks[k]["start"], 3), "end": round(chunks[k]["end"], 3),
+                     "start_idx": chunks[k]["start_idx"], "end_idx": chunks[k]["end_idx"],
                      "text": chunks[k]["text"]}
                     for k in group
                 ],

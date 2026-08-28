@@ -119,7 +119,7 @@ export const RoughAnnotate: React.FC<Props> = ({
         return <Box {...common}>{inner}</Box>;
       case "bracket":
         return (
-          <Bracket {...common} brackets={["left", "right"]}>
+          <Bracket {...common} bracketLeft bracketRight>
             {inner}
           </Bracket>
         );
