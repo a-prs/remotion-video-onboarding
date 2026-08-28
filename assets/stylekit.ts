@@ -28,6 +28,16 @@
  * "auto" = skip the wait, still say the report out loud, then render. Set
  * once the user answers the question in Шаг 7 — don't re-ask after that in
  * this project.
+ *
+ * transcription-engine: local
+ * ^ persisted user preference for Шаг 6 п.1 (transcription): "local" = the
+ * offline whisper.cpp model via @remotion/install-whisper-cpp (default, no
+ * API key, no per-run cost). "groq" = Groq's hosted whisper-large-v3 API
+ * (scripts/transcribe_groq.py) — faster, noticeably better on Russian, but
+ * needs $GROQ_API_KEY in the environment and costs API credits per run, and
+ * sends the project's audio to Groq's cloud. Ask ONCE per project the first
+ * time Шаг 6 п.1 runs (never default to "groq" silently), then reuse this
+ * value for the rest of the project without re-asking.
  */
 import { loadFont as loadSans } from "@remotion/google-fonts/Montserrat";
 import { loadFont as loadMono } from "@remotion/google-fonts/JetBrainsMono";
