@@ -20,7 +20,16 @@ not meaningfully slower.
 
 Usage:
     prep_speech_only.py <video> <out_audio.wav> <out_map.json>
+                        [--speech-map workDir/vad.json]
                         [--ratio-threshold 0.55] [--min-silence 6.0] [--pad 1.5]
+
+--speech-map points at the scripts/vad.py output for this video (schemaVersion
+2) — when given, silence is computed from its `fine` speech regions instead of
+this script's own `detect_silences(-30dB)` pass, so the "how much is silence"
+question is answered by the same detector as everything else in the pipeline
+(and, on the Silero engine, more reliably on quiet speech). Without it, falls
+back to the original standalone -30dB detection — unchanged for anyone calling
+this script outside the Шаг 6 pipeline.
 
 Exit code 2 (no output files written) means "not needed, transcribe the
 original directly" — the ratio was under threshold. Exit 0 means out_audio
@@ -53,11 +62,24 @@ def extract_audio(src: str, out_wav: str) -> None:
         sys.exit(1)
 
 
-def plan_speech_spans(audio_wav: str, dur: float, min_silence: float, pad: float) -> list:
+def silences_from_fine(fine_regions: list, dur: float, min_silence: float) -> list:
+    """Gaps between vad.py's `fine` speech regions, at least min_silence long —
+    same output shape as detect_silences(), so plan_speech_spans() doesn't
+    need to know which source it came from."""
+    gaps, cur = [], 0.0
+    for s, e in fine_regions:
+        if s - cur >= min_silence:
+            gaps.append([cur, s])
+        cur = max(cur, e)
+    if dur - cur >= min_silence:
+        gaps.append([cur, dur])
+    return gaps
+
+
+def plan_speech_spans(sils: list, dur: float, pad: float) -> list:
     """[[orig_start, orig_end], ...] spans worth transcribing: the complement
     of long silences, each padded generously (capped so neighboring spans
     never overlap) to preserve Whisper's run-up/decay context."""
-    sils = detect_silences(audio_wav, noise_db=-30.0, min_sil=min_silence)
     if not sils:
         return [[0.0, dur]]
     spans, cursor = [], 0.0
@@ -112,15 +134,29 @@ def main() -> int:
     ap.add_argument("--pad", type=float, default=1.5,
                     help="run-up/decay context (sec) kept around each speech span — "
                          "deliberately generous, NOT this skill's tight final --pad")
+    ap.add_argument("--speech-map", default="",
+                    help="workDir/vad.json from scripts/vad.py — use its `fine` regions "
+                         "instead of this script's own -30dB detect_silences() pass")
     args = ap.parse_args()
 
     tmp_dir = Path(args.out_audio).parent
     tmp_dir.mkdir(parents=True, exist_ok=True)
     raw_wav = str(tmp_dir / f"_prep_raw_{Path(args.video).stem}.wav")
     extract_audio(args.video, raw_wav)
-    dur = probe_duration(raw_wav)
 
-    sils = detect_silences(raw_wav, noise_db=-30.0, min_sil=args.min_silence)
+    if args.speech_map:
+        vad = json.loads(Path(args.speech_map).read_text())
+        if vad.get("schemaVersion") != 2:
+            print(f"[prep_speech_only] {args.speech_map} is schemaVersion "
+                  f"{vad.get('schemaVersion')!r}, expected 2 — re-run Шаг 6.2 (scripts/vad.py) "
+                  f"to regenerate it.", file=sys.stderr)
+            return 1
+        dur = vad["duration"]
+        sils = silences_from_fine(vad["fine"], dur, args.min_silence)
+    else:
+        dur = probe_duration(raw_wav)
+        sils = detect_silences(raw_wav, noise_db=-30.0, min_sil=args.min_silence)
+
     silent_total = sum(e - s for s, e in sils)
     ratio = silent_total / dur if dur > 0 else 0.0
     print(f"[prep_speech_only] silence ratio {ratio:.2f} ({silent_total:.0f}s of {dur:.0f}s, "
@@ -131,7 +167,7 @@ def main() -> int:
         Path(raw_wav).unlink(missing_ok=True)
         return 2
 
-    spans = plan_speech_spans(raw_wav, dur, args.min_silence, args.pad)
+    spans = plan_speech_spans(sils, dur, args.pad)
     splice_tmp = tmp_dir / f"_prep_splice_{Path(args.video).stem}"
     splice_tmp.mkdir(exist_ok=True)
     splice_audio(raw_wav, spans, args.out_audio, splice_tmp)

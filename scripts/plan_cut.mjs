@@ -2,145 +2,210 @@
 // original timeline plus the word list re-timed onto the cut timeline. Remotion
 // then plays those spans straight from the source file, so there is no
 // per-segment encode, no concat, and therefore no A/V drift and no accumulated
-// duration error — the three defects the ffmpeg-concat route produced.
+// duration error — the defects the ffmpeg-concat route produced.
+//
+// Reads workDir/vad.json (scripts/vad.py) as the SOLE source of speech/silence
+// truth — no subprocess calls of its own (no ffmpeg silencedetect, no ffprobe).
+// Previously this script ran its own separate, cruder silencedetect and never
+// consulted vad.json at all, which is how a quiet punchline word ended up
+// classified as "silence" and silently deleted — see references/audio-pipeline.md.
 //
 // node scripts/plan_cut.mjs <workDir> <wordsJson> <retakesJson> <outJson>
-import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
 const [workDir, wordsFile, retakesFile, outFile] = process.argv.slice(2);
 
-const GAP = Number(process.env.GAP ?? 1.5);    // only pauses longer than this are removed
-const PAD = Number(process.env.PAD ?? 0.35);   // breathing room kept around speech
-const MERGE = Number(process.env.MERGE ?? 0.8);// kept spans closer than this: don't cut between them
-const MIN_SEG = 0.70;  // a shorter span reads as a glitch — grown, never dropped
-const PREROLL = 0.08;  // run-up preserved before a kept word
+// GAP is now the ONLY knob that decides "is this pause worth cutting" — a raw
+// gap between two `fine` speech regions must be at least this long. PAD and
+// MERGE no longer conspire to raise that bar themselves (they used to: the
+// real cut threshold used to be MERGE+2*PAD = 1.5s while GAP claimed 0.8s —
+// found during the Silero-unification patch, see audio-pipeline.md). PAD is
+// now purely cosmetic breathing room; MERGE is purely an anti-sliver safety
+// net for leftover kept fragments, not a second threshold.
+const GAP = Number(process.env.GAP ?? 0.7);     // min raw pause length worth cutting
+const PAD = Number(process.env.PAD ?? 0.15);    // breathing room kept around speech
+const MERGE = Number(process.env.MERGE ?? 0.3); // kept slivers closer than this get swallowed
+const MIN_SEG = 0.70;   // a shorter span reads as a glitch — grown, never dropped
+const PREROLL = 0.08;   // run-up preserved before a kept word (subtitle spacing, unrelated to cuts)
+const LOOKBACK = 0.8;   // how far back to search for a word's acoustic support — a search
+                        // BOUND, not a protection field, so being generous here is free
 
-const src = path.join(workDir, 'audio16k.wav');
-const dur = parseFloat(spawnSync('ffprobe', ['-v', 'error', '-show_entries',
-  'format=duration', '-of', 'csv=p=0', src], { encoding: 'utf8' }).stdout.trim());
-
-const run = (d, db = 32) => {
-  const r = spawnSync('ffmpeg', ['-hide_banner', '-i', src, '-af',
-    `silencedetect=noise=-${db}dB:d=${d}`, '-f', 'null', '-'],
-    { encoding: 'utf8', maxBuffer: 128 * 1024 * 1024 });
-  const out = (r.stderr ?? '') + (r.stdout ?? '');
-  const sil = []; const re = /silence_start: ([0-9.]+)[\s\S]*?silence_end: ([0-9.]+)/g;
-  let m; while ((m = re.exec(out)) !== null) sil.push([parseFloat(m[1]), parseFloat(m[2])]);
-  return sil;
-};
-
-const longSil = run(GAP);   // pauses worth cutting
-
-// --- snap retake spans so no fragment of a dropped word survives -----------
-// Measured on this material: DTW word starts lag the true acoustic onset by
-// median 0.26s, p90 0.40s, max 0.45s (103 samples). Cutting at word.start
-// therefore leaves a quarter-second of the dropped word attached to the previous
-// segment — which is exactly what "чтобы… чтобы" / "хотя… хотя" were.
-//
-// Both ends of a retake span are DTW starts and share that lag, so shifting both
-// earlier removes the dropped onset without clipping the kept word's attack.
-// Where a real pause exists we snap to it (exact); otherwise we back off by the
-// measured worst-case lag, floored so we never eat the previous word.
-const LAG = 0.45;
-const fine = run(0.02, 45);   // fine map: catches inter-word gaps, not just pauses
-
-const pauseEndingNear = (t, tol) => {
-  let best = null;
-  for (const [ps, pe] of fine) {
-    if (pe <= t + 0.05 && t - pe <= tol) best = [ps, pe];
-    if (ps > t + 0.05) break;
-  }
-  return best;
-};
-
-const wordsAll = JSON.parse(fs.readFileSync(wordsFile, 'utf8'));
-const prevWordStart = (t) => {
-  let b = 0;
-  for (const w of wordsAll) { if (w.start < t - 0.02) b = w.start; else break; }
-  return b;
-};
-
-const { cuts: rawCuts } = JSON.parse(fs.readFileSync(retakesFile, 'utf8'));
-// With PRESNAPPED the spans already come from scripts/refine_cuts.mjs, which
-// places them against the speech-activity map (scripts/vad.py) — the DTW-lag
-// guesswork below is then not just unnecessary but harmful.
-const retakes = process.env.PRESNAPPED
-  ? rawCuts
-  : rawCuts.map(([a, b]) => {
-      const pa = pauseEndingNear(a, 0.6);
-      const pb = pauseEndingNear(b, 0.6);
-      const aFloor = prevWordStart(a) + 0.15;
-      const a2 = Math.max(aFloor, pa ? (pa[0] + pa[1]) / 2 : a - LAG);
-      const b2 = pb ? Math.max(a2 + 0.1, pb[1] - PREROLL) : Math.max(a2 + 0.1, b - LAG);
-      return [a2, b2];
-    });
-
-// --- kept spans = everything except long pauses and retakes -----------------
-let keep = [];
-let cur = 0;
-for (const [s, e] of longSil) {
-  const from = Math.max(0, cur - (cur > 0 ? 0 : 0));
-  if (s - cur > 0.05) keep.push([Math.max(0, from - 0), Math.min(dur, s + PAD)]);
-  cur = Math.max(0, e - PAD);
+const vadPath = path.join(workDir, 'vad.json');
+const vad = JSON.parse(fs.readFileSync(vadPath, 'utf8'));
+if (vad.schemaVersion !== 2) {
+  console.error(`[plan_cut] ${vadPath} is schemaVersion ${vad.schemaVersion ?? '(missing)'}, ` +
+    `expected 2 — re-run Шаг 6.2 (scripts/vad.py) to regenerate it, this file is from an older skill version.`);
+  process.exit(1);
 }
-if (dur - cur > 0.05) keep.push([cur, dur]);
-keep = keep.map(([s, e]) => [Math.max(0, s), Math.min(dur, e)]).filter(([s, e]) => e > s);
+const { duration: dur, fine, support, engine } = vad;
+if (engine === 'energy-fallback') {
+  console.error('[plan_cut] WARNING: vad.json was built with the energy-fallback detector ' +
+    '(Silero/onnxruntime unavailable) — pause/word-boundary decisions are less accurate than ' +
+    'usual. Say this to the user; don\'t silently proceed as if nothing changed.');
+}
 
-const subtract = (spans, [cs, ce]) => spans.flatMap(([s, e]) => {
+const words = JSON.parse(fs.readFileSync(wordsFile, 'utf8'));
+const { cuts: rawRetakes, source: retakesSource } = JSON.parse(fs.readFileSync(retakesFile, 'utf8'));
+if (retakesSource !== 'refine_cuts') {
+  console.error(`[plan_cut] WARNING: ${retakesFile} has no "source": "refine_cuts" tag — its cut ` +
+    `boundaries may be raw ASR/LLM timestamps, not real pause/energy-snapped ones. Re-run Шаг 6.3 ` +
+    `(scripts/refine_cuts.mjs) to produce it properly rather than hand-writing this file.`);
+}
+const retakes = rawRetakes.map(([s, e]) => [s, e]).sort((a, b) => a[0] - b[0]);
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// Remove a single [cs,ce] cut from a list of spans.
+const subtractOne = (spans, [cs, ce]) => spans.flatMap(([s, e]) => {
   if (ce <= s || cs >= e) return [[s, e]];
   const out = [];
   if (cs > s) out.push([s, cs]);
   if (ce < e) out.push([ce, e]);
   return out;
 });
-for (const c of retakes) keep = subtract(keep, c);
+const subtractAll = (spans, cuts) => cuts.reduce((acc, c) => subtractOne(acc, c), spans);
 
-// merge spans separated by less than MERGE (a cut that short is not worth making)
-const merged = [];
-for (const sp of keep.sort((a, b) => a[0] - b[0])) {
-  const last = merged[merged.length - 1];
-  if (last && sp[0] - last[1] < MERGE) last[1] = Math.max(last[1], sp[1]);
-  else merged.push([...sp]);
+const wordInRetake = (w) => retakes.some(([cs, ce]) => w.start >= cs && w.start < ce);
+
+// A word's acoustic support = the widest support[] interval touching
+// [w.start - LOOKBACK, w.end]. `support` is sorted ascending (vad.py builds it
+// that way), so a simple scan with early exit is enough.
+const acousticSupport = (w) => {
+  const lo = w.start - LOOKBACK, hi = w.end;
+  let best = null;
+  for (const [s, e] of support) {
+    if (e < lo) continue;
+    if (s > hi) break;
+    if (!best || (e - s) > (best[1] - best[0])) best = [s, e];
+  }
+  return best;
+};
+
+// ---------------------------------------------------------------------------
+// Pass 1 — pauses only. Cut every gap between `fine` regions that's >= GAP,
+// padded for breathing room, but clipped by any word's acoustic support that
+// falls inside the padded removal (Блокер 2 fix): a word ASR believes exists,
+// which Silero/energy confirms SOME acoustic evidence for within LOOKBACK of
+// it, is never removed by a pause-cut even if it missed the stricter `fine`
+// bar (a quiet punchline, a word shorter than fine's duration filters). A
+// word with NO acoustic support at all (an ASR hallucination in dead air) is
+// not protected — the silence around it is still removed, see V4 below.
+// ---------------------------------------------------------------------------
+
+const protectedZones = words
+  .filter((w) => !wordInRetake(w))
+  .map(acousticSupport)
+  .filter(Boolean);
+
+let clippedByProtection = 0;
+let keep = [[0, dur]];
+const gaps = [];
+if (fine.length === 0) {
+  gaps.push([0, dur]);
+} else {
+  if (fine[0][0] > 0) gaps.push([0, fine[0][0]]);
+  for (let i = 1; i < fine.length; i++) gaps.push([fine[i - 1][1], fine[i][0]]);
+  if (fine[fine.length - 1][1] < dur) gaps.push([fine[fine.length - 1][1], dur]);
 }
-// Never DROP a short span — it may carry speech (an earlier version of this
-// filter silently ate 23 words). Grow it to MIN_SEG instead, then re-merge.
-const grown = merged.map(([s, e]) => {
+
+let pauseSecondsCut = 0;
+for (const [gs, ge] of gaps) {
+  if (ge - gs < GAP) continue;
+  const removal = [Math.max(0, gs + PAD), Math.min(dur, ge - PAD)];
+  if (removal[1] <= removal[0]) continue;
+  const touching = protectedZones.filter(([ps, pe]) => pe > removal[0] && ps < removal[1]);
+  const pieces = touching.length ? subtractAll([removal], touching) : [removal];
+  if (touching.length) clippedByProtection++;
+  for (const piece of pieces) {
+    keep = subtractOne(keep, piece);
+    pauseSecondsCut += piece[1] - piece[0];
+  }
+}
+keep = keep.filter(([s, e]) => e > s);
+
+// merge kept slivers separated by less than MERGE, then grow anything still
+// under MIN_SEG (never drop it — it may carry speech) and re-merge. Pauses
+// only, at this point — retakes haven't been subtracted yet (Блокер 3).
+const mergeSpans = (spans, gapMax) => {
+  const out = [];
+  for (const sp of spans.slice().sort((a, b) => a[0] - b[0])) {
+    const last = out[out.length - 1];
+    if (last && sp[0] - last[1] < gapMax) last[1] = Math.max(last[1], sp[1]);
+    else out.push([...sp]);
+  }
+  return out;
+};
+keep = mergeSpans(keep, MERGE);
+keep = keep.map(([s, e]) => {
   if (e - s >= MIN_SEG) return [s, e];
   const need = (MIN_SEG - (e - s)) / 2;
   return [Math.max(0, s - need), Math.min(dur, e + need)];
 });
-const final = [];
-for (const sp of grown) {
-  const last = final[final.length - 1];
-  if (last && sp[0] - last[1] < MERGE) last[1] = Math.max(last[1], sp[1]);
-  else final.push([...sp]);
-}
+keep = mergeSpans(keep, MERGE);
 
-const words = wordsAll;
+// ---------------------------------------------------------------------------
+// Pass 2 — retakes, LAST, and their boundaries become walls: never merged or
+// grown across (Блокер 3). Previously retake cuts shorter than MERGE (~0.8s)
+// were silently undone by the same merge pass used for pauses — almost every
+// real false-start ("чувак я", "чтобы") is shorter than that, so the
+// duplicate was detected but never actually removed from the output.
+// ---------------------------------------------------------------------------
 
-// --- assign words, drop speech-less spans, re-time -------------------------
+const EPS = 1e-3;
+const isWallPoint = (t) => retakes.some(([cs, ce]) => Math.abs(t - cs) < EPS || Math.abs(t - ce) < EPS);
+
+keep = subtractAll(keep, retakes).filter(([s, e]) => e - s > 0.02);
+
+const shortAgainstWall = [];
+keep = keep.map(([s, e]) => {
+  if (e - s >= MIN_SEG) return [s, e];
+  const leftWall = isWallPoint(s) || s <= EPS;
+  const rightWall = isWallPoint(e) || e >= dur - EPS;
+  const need = MIN_SEG - (e - s);
+  if (!leftWall && !rightWall) {
+    // free on both sides (a pause-only sliver that slipped through) — grow both ways as before
+    const half = need / 2;
+    return [Math.max(0, s - half), Math.min(dur, e + half)];
+  }
+  if (!leftWall) return [Math.max(0, s - need), e];       // grow left, away from the right wall
+  if (!rightWall) return [s, Math.min(dur, e + need)];    // grow right, away from the left wall
+  shortAgainstWall.push([s, e]);                          // walled on both sides — can't grow, report it
+  return [s, e];
+});
+
+// ---------------------------------------------------------------------------
+// Assign words, drop speech-less spans, re-time.
+// ---------------------------------------------------------------------------
+
 // Membership is decided by the word's START, not its midpoint. DTW starts lag and
 // the end is a synthetic cap, so a midpoint test put every sentence-final word
-// inside the following silence and silently dropped 21 of them.
+// inside the following silence and silently dropped words (a defect this skill
+// already hit once — 21 words on real material).
 const owner = (t, segs) => segs.findIndex(([a, b]) => t >= a - 0.05 && t <= b);
+const final = keep;
 
 let kept = final.map(([a, b]) => ({ a, b, words: [] }));
-for (const w of words) {
-  const i = owner(w.start, final);
-  if (i !== -1) kept[i].words.push(w);
-}
-// A span carrying no speech is dead b-roll from the silent stretch — 14 of them
-// (12.9s) survived the earlier "grow, never drop" rule and opened the edit with
-// three seconds of nothing.
+const wordCategory = new Map();   // word index -> 'kept' | 'retake' | 'confirmed-lost' | 'unconfirmed'
+words.forEach((w, i) => {
+  if (wordInRetake(w)) { wordCategory.set(i, 'retake'); return; }
+  const idx = owner(w.start, final);
+  if (idx !== -1) { kept[idx].words.push(w); wordCategory.set(i, 'kept'); return; }
+  wordCategory.set(i, acousticSupport(w) ? 'confirmed-lost' : 'unconfirmed');
+});
+
+// A span carrying no speech is dead air/b-roll from a silent stretch that
+// survived the grow rule — drop it, but count it (was silently absorbed before).
+const emptySpansDropped = kept.filter((k) => k.words.length === 0).length;
 kept = kept.filter((k) => k.words.length > 0);
 
-let acc2 = 0;
+let acc = 0;
 const segsOut = [];
 const cutWords = [];
 for (const k of kept) {
-  const at = acc2;
+  const at = acc;
   segsOut.push([+k.a.toFixed(3), +k.b.toFixed(3)]);
   for (const w of k.words) {
     const start = at + Math.max(0, w.start - k.a);
@@ -148,38 +213,98 @@ for (const k of kept) {
     cutWords.push({ word: w.word, start: +start.toFixed(3),
                     end: +Math.max(start + 0.12, end).toFixed(3) });
   }
-  acc2 += k.b - k.a;
+  acc += k.b - k.a;
 }
-const offsets2 = (() => { let a = 0; return kept.map((k) => { const o = a; a += k.b - k.a; return +o.toFixed(3); }); })();
+const offsets = (() => { let a = 0; return kept.map((k) => { const o = a; a += k.b - k.a; return +o.toFixed(3); }); })();
 
-// --- verification: a junction must not repeat a word ------------------------
-// This is the defect the author kept hearing ("чтобы… чтобы", "хотя… хотя",
-// "Как по мне… как по мне"): a dropped word's onset survives on the tail of the
-// previous span and is then spoken again at the head of the next. Checked here
-// so it can never ship unnoticed again.
+// ---------------------------------------------------------------------------
+// VERIFY — five checks, not one unchecked summary line.
+// ---------------------------------------------------------------------------
+
 const norm = (x) => String(x || '').toLowerCase().replace(/[^a-zа-яё0-9]/gi, '');
-const problems = [];
+
+// V1 — a junction must not repeat a word (the "чтобы… чтобы" defect: a dropped
+// word's onset survives on the tail of one span and is spoken again on the next).
+const v1problems = [];
 for (let i = 1; i < kept.length; i++) {
-  const prev = kept[i - 1].words;
-  const next = kept[i].words;
+  const prev = kept[i - 1].words, next = kept[i].words;
   if (!prev.length || !next.length) continue;
   if (norm(prev[prev.length - 1].word) === norm(next[0].word)) {
-    problems.push(`junction ${i}: "${prev[prev.length - 1].word}" repeats at ${kept[i].a.toFixed(2)}s`);
+    v1problems.push(`junction ${i}: "${prev[prev.length - 1].word}" repeats at ${kept[i].a.toFixed(2)}s`);
   }
 }
 
+// V2 — every retake cut must have ZERO overlap with the final kept union (Блокер 3).
+const v2problems = [];
+for (const [cs, ce] of retakes) {
+  for (const [a, b] of segsOut) {
+    if (ce > a + EPS && cs < b - EPS) {
+      v2problems.push(`retake [${cs.toFixed(2)}, ${ce.toFixed(2)}] overlaps kept segment [${a.toFixed(2)}, ${b.toFixed(2)}]`);
+    }
+  }
+}
+
+// V3 — an acoustically-confirmed word must never be lost to a pause-cut.
+const v3problems = [];
+const v4unconfirmed = [];
+words.forEach((w, i) => {
+  const cat = wordCategory.get(i);
+  if (cat === 'confirmed-lost') v3problems.push(`"${w.word}" at ${w.start.toFixed(2)}s had acoustic support but was cut`);
+  if (cat === 'unconfirmed') v4unconfirmed.push(`"${w.word}" at ${w.start.toFixed(2)}s (no acoustic support — possible ASR hallucination)`);
+});
+
+// V5 — words kept, broken down by reason instead of one opaque ratio.
+const counts = { total: words.length, kept: 0, retake: 0, unconfirmed: 0, confirmedLost: 0 };
+for (const cat of wordCategory.values()) {
+  if (cat === 'kept') counts.kept++;
+  else if (cat === 'retake') counts.retake++;
+  else if (cat === 'unconfirmed') counts.unconfirmed++;
+  else if (cat === 'confirmed-lost') counts.confirmedLost++;
+}
+
+const failed = v1problems.length > 0 || v2problems.length > 0 || v3problems.length > 0 || counts.confirmedLost > 0;
+
 fs.writeFileSync(outFile, JSON.stringify({
-  segments: segsOut, offsets: offsets2, duration: +acc2.toFixed(3), words: cutWords,
+  segments: segsOut, offsets, duration: +acc.toFixed(3), words: cutWords,
+  meta: {
+    engine, gap: GAP, pad: PAD, merge: MERGE, lookback: LOOKBACK,
+    pauseSecondsCut: +pauseSecondsCut.toFixed(2),
+    retakeSecondsCut: +retakes.reduce((s, [a, b]) => s + (b - a), 0).toFixed(2),
+    spansClippedByWordProtection: clippedByProtection,
+    emptySpansDropped, shortSegmentsAgainstWall: shortAgainstWall.length,
+    wordCounts: counts,
+  },
 }, null, 2));
 
 const lens = segsOut.map(([a, b]) => b - a).sort((x, y) => x - y);
+console.log(`[plan_cut] engine=${engine}  GAP=${GAP}s PAD=${PAD}s MERGE=${MERGE}s  ` +
+  `(minimal cuttable pause = ${GAP}s, no other constant raises that bar)`);
 console.log(`segments: ${segsOut.length}`);
-console.log(`duration: ${acc2.toFixed(2)}s`);
-console.log(`segment length: min ${lens[0].toFixed(2)}s | median ${lens[Math.floor(lens.length / 2)].toFixed(2)}s | max ${lens[lens.length - 1].toFixed(2)}s`);
-console.log(`words kept: ${cutWords.length} of ${words.length}`);
-if (problems.length) {
-  console.log(`VERIFY FAILED — ${problems.length} repeated word(s) at junctions:`);
-  for (const p of problems) console.log('  ' + p);
+console.log(`duration: ${acc.toFixed(2)}s  (pauses cut ${pauseSecondsCut.toFixed(1)}s, retakes cut ` +
+  `${retakes.reduce((s, [a, b]) => s + (b - a), 0).toFixed(1)}s)`);
+if (lens.length) {
+  console.log(`segment length: min ${lens[0].toFixed(2)}s | median ${lens[Math.floor(lens.length / 2)].toFixed(2)}s | max ${lens[lens.length - 1].toFixed(2)}s`);
+}
+console.log(`words: ${counts.kept} kept, ${counts.retake} removed as retakes, ` +
+  `${counts.unconfirmed} removed as unconfirmed (no acoustic support — see V4), ` +
+  `${counts.confirmedLost} LOST despite confirmed support (V3 — must be 0)`);
+if (clippedByProtection) console.log(`word protection clipped ${clippedByProtection} pause-removal span(s)`);
+if (emptySpansDropped) console.log(`dropped ${emptySpansDropped} speech-less span(s) (dead air survivors)`);
+if (shortAgainstWall.length) {
+  console.log(`${shortAgainstWall.length} segment(s) shorter than ${MIN_SEG}s squeezed between two retake walls, left as-is:`);
+  for (const [s, e] of shortAgainstWall) console.log(`  [${s.toFixed(2)}, ${e.toFixed(2)}] (${(e - s).toFixed(2)}s)`);
+}
+if (v4unconfirmed.length) {
+  console.log(`V4 (informational, not a failure) — ${v4unconfirmed.length} word(s) removed with no acoustic support:`);
+  for (const p of v4unconfirmed) console.log('  ' + p);
+}
+if (failed) {
+  console.log('VERIFY FAILED:');
+  for (const p of v1problems) console.log(`  V1 ${p}`);
+  for (const p of v2problems) console.log(`  V2 ${p}`);
+  for (const p of v3problems) console.log(`  V3 ${p}`);
+  if (counts.confirmedLost) console.log(`  V3 wordCounts.confirmedLost = ${counts.confirmedLost}, expected 0`);
+  process.exitCode = 1;
 } else {
-  console.log('verify: no word repeats across any junction');
+  console.log('verify: V1-V3 clean (no junction repeats, no retake survived, no confirmed word lost)');
 }

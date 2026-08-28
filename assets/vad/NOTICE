@@ -1,0 +1,24 @@
+silero_vad_v6.onnx — vendored third-party model
+
+This file is `faster_whisper/assets/silero_vad_v6.onnx` from the
+faster-whisper project, copied verbatim (sha256
+4cbf549b8326f60f80f2536d9eefeb450a9abe83365a098031c89719f1be17d2, 1245151
+bytes), which is itself an ONNX re-export of the Silero VAD model. It has a
+different interface (batched input[seq_len,576]/h/c) than the upstream
+snakers4/silero-vad release's own ONNX export (streaming input/state/sr) —
+they are not interchangeable. scripts/vad_model.py's wrapper is written
+specifically against this file's interface; do not replace it with a
+differently-exported Silero VAD file.
+
+Licenses (both MIT, verified against the upstream repositories):
+
+- faster-whisper — Copyright (c) 2023 SYSTRAN
+  https://github.com/SYSTRAN/faster-whisper (LICENSE)
+- Silero VAD — Copyright (c) 2020-present Silero Team
+  https://github.com/snakers4/silero-vad (LICENSE)
+
+scripts/vad_model.py's inference wrapper is a from-scratch port of the
+relevant ~40 lines of faster_whisper/vad.py's SileroVADModel (MIT), with two
+fixes: it copies the input audio before scoring (upstream mutates the last 64
+samples of the caller's buffer via a view) and it verifies the model file's
+sha256 at load time.

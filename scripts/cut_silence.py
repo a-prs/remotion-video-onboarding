@@ -100,11 +100,36 @@ def detect_silences(video: str, noise_db: float, min_sil: float) -> list:
     return sils
 
 
-def keep_from_audio(video: str, dur: float, noise_db: float, min_sil: float,
-                    pad: float) -> list:
+def load_speech_map(path: str) -> tuple:
+    """(duration, fine_regions) from vad.py's output. A drop-in source for
+    "how much is silence" so this legacy path answers that question from the
+    same detector as the mainline Sequence path, instead of its own separate
+    -30dB ffmpeg pass (which misses quiet speech the same way plan_cut.mjs's
+    old internal silencedetect did)."""
+    vad = json.loads(Path(path).read_text())
+    if vad.get("schemaVersion") != 2:
+        print(f"{path} is schemaVersion {vad.get('schemaVersion')!r}, expected 2 — "
+              f"re-run Шаг 6.2 (scripts/vad.py) to regenerate it.", file=sys.stderr)
+        sys.exit(1)
+    return vad["duration"], vad["fine"]
+
+
+def gaps_from_fine(fine: list, dur: float, min_sil: float) -> list:
+    """[[s,e],...] gaps between `fine` speech regions at least min_sil long —
+    same output shape as detect_silences()."""
+    gaps, cur = [], 0.0
+    for s, e in fine:
+        if s - cur >= min_sil:
+            gaps.append([cur, s])
+        cur = max(cur, e)
+    if dur - cur >= min_sil:
+        gaps.append([cur, dur])
+    return gaps
+
+
+def keep_from_audio(sils: list, dur: float, pad: float) -> list:
     """KEEP spans = complement of audio silences, leaving `pad` of air around
     speech so cuts don't clip breaths/word-edges. Robust to bad whisper timings."""
-    sils = detect_silences(video, noise_db, min_sil)
     removed = []
     for s, e in sils:
         rs, re_ = s + pad, e - pad          # shrink: keep pad of air on both sides
@@ -313,12 +338,22 @@ def main() -> int:
     ap.add_argument("--level", action="store_true",
                     help="after cutting, run clean_audio.py on the output (loudnorm -14 LUFS "
                          "+ denoise + de-hum), in place. Non-fatal — keeps the raw cut on failure.")
+    ap.add_argument("--speech-map", default="",
+                    help="workDir/vad.json from scripts/vad.py — use its `fine` regions for "
+                         "--audio mode and for retake-boundary snapping, instead of this "
+                         "script's own -30dB detect_silences() ffmpeg pass")
     args = ap.parse_args()
 
     words = load_words(args.raw_words)
-    dur = probe_duration(args.video)
+    fine = None
+    if args.speech_map:
+        dur, fine = load_speech_map(args.speech_map)
+    else:
+        dur = probe_duration(args.video)
     if args.audio:
-        segs = keep_from_audio(args.video, dur, args.noise, args.gap, args.pad)
+        sils = gaps_from_fine(fine, dur, args.gap) if fine is not None \
+            else detect_silences(args.video, args.noise, args.gap)
+        segs = keep_from_audio(sils, dur, args.pad)
         retime = retime_words_clamped
     else:
         segs = keep_segments(words, dur, args.gap, args.pad)
@@ -329,7 +364,8 @@ def main() -> int:
         cd = json.loads(Path(args.cut_spans).read_text())
         cuts = cd.get("cuts", cd) if isinstance(cd, dict) else cd
         if cuts and args.snap_window > 0:
-            snap_sils = detect_silences(args.video, args.noise, args.snap_min_sil)
+            snap_sils = gaps_from_fine(fine, dur, args.snap_min_sil) if fine is not None \
+                else detect_silences(args.video, args.noise, args.snap_min_sil)
             cuts = snap_cut_boundaries(cuts, snap_sils, args.snap_window)
         segs = subtract_spans(segs, cuts)
     kept = sum(e - s for s, e in segs)
