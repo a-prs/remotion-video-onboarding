@@ -180,18 +180,32 @@ keep = keep.map(([s, e]) => {
 // Assign words, drop speech-less spans, re-time.
 // ---------------------------------------------------------------------------
 
-// Membership is decided by the word's START, not its midpoint. DTW starts lag and
-// the end is a synthetic cap, so a midpoint test put every sentence-final word
-// inside the following silence and silently dropped words (a defect this skill
-// already hit once — 21 words on real material).
-const owner = (t, segs) => segs.findIndex(([a, b]) => t >= a - 0.05 && t <= b);
+// Ownership is decided by acoustic EVIDENCE, not a raw ASR point-test. DTW
+// lag (0.2-0.8s, sometimes more) can put a word's *reported* start just
+// outside the kept segment it actually belongs to, even though the word is
+// audibly present. That used to trip V1 (spurious "repeat" at a junction —
+// the word landed in the wrong segment's word list) and V3 (spurious "LOST"
+// — the word's raw start missed every segment by a hair) as false positives:
+// found on real material 2026-08-29 ("жирненько"/"А"/"Чувак" all flagged,
+// all verified present by re-transcribing the actual rendered output). Test
+// overlap against an interval widened by LOOKBACK on both sides when support
+// CONFIRMS the word is real — but only as a gate, never adopt support[]'s
+// own width directly: a continuous utterance's support interval can span the
+// whole segment (or more), which would resolve every word in it to
+// "overlaps everything" (the regression this fix first produced on Test B
+// before being bounded here). Fall back to the raw ASR interval only when
+// there is no support to correct with (matches V4 "unconfirmed" exactly).
+// (cutWords below still slices/clips with the word's own raw start/end, not
+// this widened interval — this only decides WHICH segment a word belongs to.)
+const owner = (interval, segs) => segs.findIndex(([a, b]) => interval[1] > a - 0.05 && interval[0] < b + 0.05);
+const evidenceInterval = (w) => acousticSupport(w) ? [w.start - LOOKBACK, w.end + LOOKBACK] : [w.start, w.end];
 const final = keep;
 
 let kept = final.map(([a, b]) => ({ a, b, words: [] }));
 const wordCategory = new Map();   // word index -> 'kept' | 'retake' | 'confirmed-lost' | 'unconfirmed'
 words.forEach((w, i) => {
   if (wordInRetake(w)) { wordCategory.set(i, 'retake'); return; }
-  const idx = owner(w.start, final);
+  const idx = owner(evidenceInterval(w), final);
   if (idx !== -1) { kept[idx].words.push(w); wordCategory.set(i, 'kept'); return; }
   wordCategory.set(i, acousticSupport(w) ? 'confirmed-lost' : 'unconfirmed');
 });
@@ -201,6 +215,17 @@ words.forEach((w, i) => {
 const emptySpansDropped = kept.filter((k) => k.words.length === 0).length;
 kept = kept.filter((k) => k.words.length > 0);
 
+// V6 — a word classified 'kept' must be classified because it fits inside
+// its segment, not merely because its evidence interval overlaps one at the
+// edge. `owner()` above only tests overlap (needed to survive DTW lag); a
+// word can still overlap a segment while part of it sticks out — e.g. a
+// retake/pause boundary landed inside the word itself, same defect class as
+// the "ткани"/"интересней" truncation, just not caught upstream this time.
+// This is what actually renders (cutWords below clips silently to the
+// segment), so it must fail exactly as loud as V1/V3, not slip through.
+const TRUNC_TOL = PAD;   // same slack already baked into a pause-cut's breathing room
+const v6problems = [];
+
 let acc = 0;
 const segsOut = [];
 const cutWords = [];
@@ -208,6 +233,9 @@ for (const k of kept) {
   const at = acc;
   segsOut.push([+k.a.toFixed(3), +k.b.toFixed(3)]);
   for (const w of k.words) {
+    if (w.start < k.a - TRUNC_TOL || w.end > k.b + TRUNC_TOL) {
+      v6problems.push(`"${w.word}" (${w.start.toFixed(2)}-${w.end.toFixed(2)}) partially outside its kept span [${k.a.toFixed(2)}, ${k.b.toFixed(2)}]`);
+    }
     const start = at + Math.max(0, w.start - k.a);
     const end = at + Math.min(k.b - k.a, w.end - k.a);
     cutWords.push({ word: w.word, start: +start.toFixed(3),
@@ -218,7 +246,7 @@ for (const k of kept) {
 const offsets = (() => { let a = 0; return kept.map((k) => { const o = a; a += k.b - k.a; return +o.toFixed(3); }); })();
 
 // ---------------------------------------------------------------------------
-// VERIFY — five checks, not one unchecked summary line.
+// VERIFY — six checks, not one unchecked summary line.
 // ---------------------------------------------------------------------------
 
 const norm = (x) => String(x || '').toLowerCase().replace(/[^a-zа-яё0-9]/gi, '');
@@ -262,7 +290,8 @@ for (const cat of wordCategory.values()) {
   else if (cat === 'confirmed-lost') counts.confirmedLost++;
 }
 
-const failed = v1problems.length > 0 || v2problems.length > 0 || v3problems.length > 0 || counts.confirmedLost > 0;
+const failed = v1problems.length > 0 || v2problems.length > 0 || v3problems.length > 0 ||
+  v6problems.length > 0 || counts.confirmedLost > 0;
 
 fs.writeFileSync(outFile, JSON.stringify({
   segments: segsOut, offsets, duration: +acc.toFixed(3), words: cutWords,
@@ -272,6 +301,7 @@ fs.writeFileSync(outFile, JSON.stringify({
     retakeSecondsCut: +retakes.reduce((s, [a, b]) => s + (b - a), 0).toFixed(2),
     spansClippedByWordProtection: clippedByProtection,
     emptySpansDropped, shortSegmentsAgainstWall: shortAgainstWall.length,
+    wordsTruncatedByCut: v6problems.length,
     wordCounts: counts,
   },
 }, null, 2));
@@ -304,7 +334,8 @@ if (failed) {
   for (const p of v2problems) console.log(`  V2 ${p}`);
   for (const p of v3problems) console.log(`  V3 ${p}`);
   if (counts.confirmedLost) console.log(`  V3 wordCounts.confirmedLost = ${counts.confirmedLost}, expected 0`);
+  for (const p of v6problems) console.log(`  V6 ${p}`);
   process.exitCode = 1;
 } else {
-  console.log('verify: V1-V3 clean (no junction repeats, no retake survived, no confirmed word lost)');
+  console.log('verify: V1-V3,V6 clean (no junction repeats, no retake survived, no confirmed word lost, no word truncated by a cut)');
 }

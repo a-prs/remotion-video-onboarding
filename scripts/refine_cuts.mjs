@@ -86,32 +86,75 @@ const minProbPlateau = (t1, t2) => {
   return { t: +mid.toFixed(3), how: 'prob-min' };
 };
 
-// Where the speech before `word` really stops. `prev` bounds the search so we
-// never wander back past the word we intend to keep.
+// Where the speech before `word` really stops. `prev` is the immediately
+// preceding word (must survive intact) — the ONLY safe search zone is the ASR
+// gap between prev's end and this word's start. An earlier version searched
+// up to 1.0s back, bounded only by prev.START — inside a slitherly-merged
+// false start that window covers the WHOLE of `prev`'s own articulation, so
+// the "local minimum" could land in the middle of a word that must be kept
+// (found on real material 2026-08-29: a boundary landed inside "ткани",
+// truncating it, while the matching end-boundary left 0.89s of "интересней"
+// — a fully-dropped word — surviving in the output). If prev and word are
+// contiguous (no ASR slack at all, the common case for a slitherly-merged
+// false start) there is nothing to search — the word boundary itself IS the
+// only correct answer.
 const boundaryBefore = (prev, word) => {
-  const gap = gapBefore(word.start, prev ? prev.start : null);
+  const gap = gapBefore(word.start, prev ? prev.end : null);
   if (gap) return { gap, how: 'pause' };
-  const lo = prev ? Math.max(prev.start, word.start - 1.0) : Math.max(0, word.start - 0.5);
-  const p = minProbPlateau(lo, word.start);
+  const lo = prev ? prev.end : Math.max(0, word.start - 0.5);
+  const hi = Math.max(lo, word.start);
+  if (hi - lo < 0.02) return { gap: [lo, hi], how: 'contiguous' };
+  const p = minProbPlateau(lo, hi);
   if (p) return { gap: [p.t, p.t], how: p.how };
-  const m = minEnergyAt(lo, word.start);
+  const m = minEnergyAt(lo, hi);
   return { gap: m === null ? null : [m, m], how: 'energy-min' };
 };
 
+const EPS = 1e-3;
 const out = [];
 const log = [];
+const boundaryProblems = [];
 for (const [dropIdx, keepIdx] of pairs) {
   const drop = words[dropIdx];
   const keep = words[keepIdx];
-  const a = boundaryBefore(words[dropIdx - 1] ?? null, drop);
-  const b = boundaryBefore(words[keepIdx - 1] ?? null, keep);
-  // start: middle of the pause before the dropped take (its onset goes with it)
+  const prevKept = words[dropIdx - 1] ?? null;
+  const lastDropped = words[keepIdx - 1];
+  const a = boundaryBefore(prevKept, drop);
+  const b = boundaryBefore(lastDropped, keep);
+  // start: middle of the pause before the dropped take (its onset goes with
+  // it) — for a non-pause boundary a.gap is already a single exact point.
   const start = a.gap ? (a.gap[0] + a.gap[1]) / 2 : drop.start;
-  // end: resume at the kept take's true onset, with a little run-up
-  const end = Math.max(start + 0.1, (b.gap ? b.gap[1] : keep.start) - PREROLL);
+  // end: resume at the kept take's true onset. PREROLL (a little run-up
+  // silence before the kept word) is only safe to donate from a REAL pause —
+  // shaving it off a contiguous/acoustic-minimum boundary would hand back
+  // part of the dropped word we just found the exact edge of (the
+  // "интересней" bug: b.how==='contiguous' but PREROLL still ate into it).
+  const bEnd = b.gap ? b.gap[1] : keep.start;
+  const end = Math.max(start + 0.1, b.how === 'pause' ? bEnd - PREROLL : bEnd);
   out.push([+start.toFixed(3), +end.toFixed(3)]);
   log.push(`${String(out.length).padStart(2)}  ${start.toFixed(2)} → ${end.toFixed(2)}   ` +
     `drop "${drop.word}" (${a.how})   keep "${keep.word}" (${b.how})`);
+
+  // Invariant: the cut must fully contain the dropped range and must not
+  // clip either neighboring kept word. A violation here is invisible to
+  // plan_cut.mjs's V1/V3 (it trusts these boundaries as given) — print it
+  // exactly as loud.
+  if (prevKept && start < prevKept.end - EPS) {
+    boundaryProblems.push(`pair [${dropIdx},${keepIdx}]: start ${start.toFixed(3)} clips KEPT word ` +
+      `"${prevKept.word}" (${prevKept.start.toFixed(2)}-${prevKept.end.toFixed(2)})`);
+  }
+  if (start > drop.start + EPS) {
+    boundaryProblems.push(`pair [${dropIdx},${keepIdx}]: start ${start.toFixed(3)} leaves part of DROPPED word ` +
+      `"${drop.word}" (${drop.start.toFixed(2)}-${drop.end.toFixed(2)}) outside the cut`);
+  }
+  if (end < lastDropped.end - EPS) {
+    boundaryProblems.push(`pair [${dropIdx},${keepIdx}]: end ${end.toFixed(3)} leaves part of DROPPED word ` +
+      `"${lastDropped.word}" (${lastDropped.start.toFixed(2)}-${lastDropped.end.toFixed(2)}) outside the cut`);
+  }
+  if (end > keep.start + EPS) {
+    boundaryProblems.push(`pair [${dropIdx},${keepIdx}]: end ${end.toFixed(3)} clips KEPT word ` +
+      `"${keep.word}" (${keep.start.toFixed(2)}-${keep.end.toFixed(2)})`);
+  }
 }
 
 fs.writeFileSync(outFile, JSON.stringify({
@@ -123,4 +166,9 @@ if (out.length === 0) {
 } else {
   console.log(log.join('\n'));
   console.log(`total cut: ${out.reduce((s, [a, b]) => s + (b - a), 0).toFixed(1)}s`);
+}
+if (boundaryProblems.length) {
+  console.error('\nBOUNDARY INVARIANT VIOLATED (must be empty):');
+  for (const p of boundaryProblems) console.error('  ' + p);
+  process.exitCode = 1;
 }

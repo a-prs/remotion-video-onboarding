@@ -149,9 +149,51 @@ function testHallucinationsDontBlockCut() {
   if (status !== 0) console.log(stdout);
 }
 
+// ---------------------------------------------------------------------------
+// Test D — a correctly-snapped retake boundary ("ткани"/"интересней" class,
+// see tests/regression-refine-cuts.mjs for the refine_cuts.mjs side of this)
+// must not truncate the surviving neighbor word or leak the tail of the
+// fully-dropped word. V6 exists specifically to catch this if it ever
+// regresses — assert it stays at zero on the known-good boundary.
+// ---------------------------------------------------------------------------
+function testNoTruncationAtRetakeBoundary() {
+  console.log('\n[D] correctly-snapped retake boundary truncates nothing (V6, "ткани"/"интересней" class)');
+  const wd = mkWorkDir('truncation');
+  const words = [
+    { word: 'мышечной', start: 361.39, end: 362.03 },
+    { word: 'ткани', start: 362.03, end: 362.41 },
+    { word: 'это', start: 362.41, end: 362.93 },
+    { word: 'и', start: 362.93, end: 363.05 },
+    { word: 'визуально', start: 363.05, end: 363.60 },
+    { word: 'выглядит', start: 363.60, end: 364.10 },
+    { word: 'гораздо', start: 364.10, end: 364.45 },
+    { word: 'интересней', start: 364.45, end: 366.05 },
+    { word: 'это', start: 366.05, end: 366.59 },
+    { word: 'и', start: 366.59, end: 366.75 },
+  ];
+  writeJson(path.join(wd, 'vad.json'), {
+    schemaVersion: 2, engine: 'energy', duration: 368.0, hop: 0.01, energyHop: 0.01, db: [],
+    fine: [[360.0, 368.0]], regions: [[360.0, 368.0]], support: [[360.0, 368.0]],
+  });
+  const wordsFile = path.join(wd, 'words.json');
+  writeJson(wordsFile, words);
+  const retakesFile = path.join(wd, 'retakes.json');
+  writeJson(retakesFile, { cuts: [[362.41, 366.05]], source: 'refine_cuts', schemaVersion: 2 });
+
+  const { plan, status, stdout } = runPlanCut(wd, wordsFile, retakesFile);
+  assert(status === 0, 'plan_cut exits 0 (no VERIFY FAILED)');
+  assert(!!plan, 'plan.json was written');
+  const outWords = plan?.words?.map((w) => w.word) ?? [];
+  assert(outWords.includes('ткани'), `"ткани" survives whole (got words: ${JSON.stringify(outWords)})`);
+  assert(!outWords.includes('интересней'), '"интересней" (fully dropped) does not leak into the output');
+  assert(plan?.meta?.wordsTruncatedByCut === 0, `V6: zero words truncated by a cut (got ${plan?.meta?.wordsTruncatedByCut})`);
+  if (status !== 0) console.log(stdout);
+}
+
 testWordProtection();
 testShortRetakesSurvive();
 testHallucinationsDontBlockCut();
+testNoTruncationAtRetakeBoundary();
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : `${failures} FAILURE(S)`}`);
 process.exit(failures === 0 ? 0 : 1);
