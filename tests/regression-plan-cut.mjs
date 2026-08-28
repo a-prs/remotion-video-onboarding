@@ -190,10 +190,36 @@ function testNoTruncationAtRetakeBoundary() {
   if (status !== 0) console.log(stdout);
 }
 
+// ---------------------------------------------------------------------------
+// Test E — words.json shape. scripts/transcribe_groq.py writes words.json
+// wrapped as {"words": [...]} (matching the Python-side convention every
+// other consumer already unwraps) — plan_cut.mjs didn't, so the Groq engine
+// broke this step too. Found alongside the pairs.json unwrap bug, 2026-08-29.
+// ---------------------------------------------------------------------------
+function testGroqShapedWordsJson() {
+  console.log('\n[E] words.json accepts the Groq-shaped {"words":[...]} wrapper, not just a bare array');
+  const wd = mkWorkDir('groqshape');
+  writeJson(path.join(wd, 'vad.json'), {
+    schemaVersion: 2, engine: 'energy', duration: 9.0, hop: 0.01, energyHop: 0.01, db: [],
+    fine: [[0, 3], [6, 9]], regions: [[0, 3], [6, 9]], support: [[0, 3], [6, 9]],
+  });
+  const wordsFile = path.join(wd, 'words.json');
+  writeJson(wordsFile, { words: [{ word: 'a', start: 0.5, end: 1.0 }, { word: 'b', start: 6.5, end: 7.0 }] });
+  const retakesFile = path.join(wd, 'retakes.json');
+  writeJson(retakesFile, { cuts: [], source: 'refine_cuts', schemaVersion: 2 });
+
+  const { plan, status, stdout } = runPlanCut(wd, wordsFile, retakesFile);
+  assert(status === 0, 'plan_cut exits 0 on Groq-shaped words.json (no crash)');
+  const outWords = plan?.words?.map((w) => w.word) ?? [];
+  assert(outWords.includes('a') && outWords.includes('b'), `both words survive (got: ${JSON.stringify(outWords)})`);
+  if (status !== 0) console.log(stdout);
+}
+
 testWordProtection();
 testShortRetakesSurvive();
 testHallucinationsDontBlockCut();
 testNoTruncationAtRetakeBoundary();
+testGroqShapedWordsJson();
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : `${failures} FAILURE(S)`}`);
 process.exit(failures === 0 ? 0 : 1);

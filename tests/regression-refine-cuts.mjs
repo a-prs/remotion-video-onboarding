@@ -71,7 +71,9 @@ function testContiguousBoundarySnap() {
   const wordsFile = path.join(wd, 'words.json');
   writeJson(wordsFile, words);
   const pairsFile = path.join(wd, 'pairs.json');
-  writeJson(pairsFile, [[2, 8]]);  // local indices: drop "это"(2)..."интересней"(7), keep "это"(8)
+  // SKILL.md Шаг 6 п.5 format: {"pairs": [...]} — a wrapped object, not a
+  // bare array. local indices: drop "это"(2)..."интересней"(7), keep "это"(8).
+  writeJson(pairsFile, { pairs: [[2, 8]] });
   writeJson(path.join(wd, 'vad.json'), {
     schemaVersion: 2, engine: 'energy', duration: 368.0, hop: 0.01, energyHop: 0.01, db: [],
     // one continuous speech region spanning the whole excerpt — no VAD pause
@@ -111,7 +113,7 @@ function testRealPauseUnaffected() {
   const wordsFile = path.join(wd, 'words.json');
   writeJson(wordsFile, words);
   const pairsFile = path.join(wd, 'pairs.json');
-  writeJson(pairsFile, [[1, 4]]);
+  writeJson(pairsFile, [[1, 4]]);  // bare-array shape — doubles as the back-compat check for Test C
   writeJson(path.join(wd, 'vad.json'), {
     schemaVersion: 2, engine: 'energy', duration: 6.0, hop: 0.01, energyHop: 0.01, db: [],
     regions: [[0.0, 0.5], [2.0, 2.9], [5.0, 5.5]],
@@ -129,8 +131,76 @@ function testRealPauseUnaffected() {
   if (status !== 0) console.log(stdout);
 }
 
+// ---------------------------------------------------------------------------
+// Test C — pairs.json shape. SKILL.md Шаг 6 п.5 instructs writing the
+// WRAPPED object {"pairs": [...]}; a bare array must keep working too (Test
+// B already exercises it). Both empty forms must produce an empty (not
+// crashing) retakes.json — Шаг 6 п.6 explicitly runs this script even when
+// no duplicates were found, never hand-writes retakes.json instead.
+// ---------------------------------------------------------------------------
+function testPairsJsonShape() {
+  console.log('\n[C] pairs.json accepts both {"pairs":[...]} and a bare array, including empty');
+  const words = [{ word: 'a', start: 0.0, end: 0.3 }];
+  const vad = {
+    schemaVersion: 2, engine: 'energy', duration: 1.0, hop: 0.01, energyHop: 0.01, db: [],
+    regions: [[0.0, 0.3]], fine: [[0.0, 0.3]], support: [[0.0, 0.3]],
+  };
+  for (const [label, pairsContent] of [
+    ['wrapped empty', { pairs: [] }],
+    ['bare empty', []],
+  ]) {
+    const wd = mkWorkDir('shape');
+    const wordsFile = path.join(wd, 'words.json');
+    writeJson(wordsFile, words);
+    const pairsFile = path.join(wd, 'pairs.json');
+    writeJson(pairsFile, pairsContent);
+    writeJson(path.join(wd, 'vad.json'), vad);
+    const { retakes, status } = runRefineCuts(wd, wordsFile, pairsFile);
+    assert(status === 0, `${label}: refine_cuts exits 0 (no crash on this pairs.json shape)`);
+    assert(Array.isArray(retakes?.cuts) && retakes.cuts.length === 0, `${label}: wrote an empty cuts list`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Test D — words.json shape. scripts/transcribe_groq.py (Шаг 6 п.1, groq
+// engine) writes words.json wrapped as {"words": [...]}, matching the
+// Python-side convention (cut_silence.py/remap_words.py/
+// find_repeat_candidates.py all unwrap that already) — the JS side didn't,
+// so the Groq path broke everything downstream of transcription. Same class
+// of defect as Test C, found in the same report, 2026-08-29.
+// ---------------------------------------------------------------------------
+function testGroqShapedWordsJson() {
+  console.log('\n[D] words.json accepts the Groq-shaped {"words":[...]} wrapper, not just a bare array');
+  const wd = mkWorkDir('groqshape');
+  const words = [
+    { word: 'мяса', start: 0.0, end: 0.5 },
+    { word: 'чувак', start: 2.0, end: 2.4 },
+    { word: 'не', start: 2.4, end: 2.55 },
+    { word: 'гони', start: 2.55, end: 2.9 },
+    { word: 'больше', start: 5.0, end: 5.5 },
+  ];
+  const wordsFile = path.join(wd, 'words.json');
+  writeJson(wordsFile, { words });  // exactly what transcribe_groq.py writes
+  const pairsFile = path.join(wd, 'pairs.json');
+  writeJson(pairsFile, { pairs: [[1, 4]] });
+  writeJson(path.join(wd, 'vad.json'), {
+    schemaVersion: 2, engine: 'energy', duration: 6.0, hop: 0.01, energyHop: 0.01, db: [],
+    regions: [[0.0, 0.5], [2.0, 2.9], [5.0, 5.5]],
+    fine: [[0.0, 0.5], [2.0, 2.9], [5.0, 5.5]], support: [[0.0, 0.5], [2.0, 2.9], [5.0, 5.5]],
+  });
+
+  const { retakes, status, stdout } = runRefineCuts(wd, wordsFile, pairsFile);
+  assert(status === 0, 'refine_cuts exits 0 on Groq-shaped words.json (no crash)');
+  const [cut] = retakes?.cuts ?? [];
+  assert(!!cut, 'exactly one cut was produced (proves words[] indexing worked, not undefined)');
+  if (cut) assert(Math.abs(cut[0] - 1.25) < 0.01, `boundary computed correctly, got ${cut[0]}`);
+  if (status !== 0) console.log(stdout);
+}
+
 testContiguousBoundarySnap();
 testRealPauseUnaffected();
+testPairsJsonShape();
+testGroqShapedWordsJson();
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : `${failures} FAILURE(S)`}`);
 process.exit(failures === 0 ? 0 : 1);

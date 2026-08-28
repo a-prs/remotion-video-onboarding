@@ -45,7 +45,10 @@ if (engine === 'energy-fallback') {
     'usual. Say this to the user; don\'t silently proceed as if nothing changed.');
 }
 
-const words = JSON.parse(fs.readFileSync(wordsFile, 'utf8'));
+// scripts/transcribe_groq.py writes words.json wrapped as {"words": [...]},
+// not a bare array — see the matching fix/comment in refine_cuts.mjs.
+const rawWords = JSON.parse(fs.readFileSync(wordsFile, 'utf8'));
+const words = Array.isArray(rawWords) ? rawWords : (rawWords.words ?? []);
 const { cuts: rawRetakes, source: retakesSource } = JSON.parse(fs.readFileSync(retakesFile, 'utf8'));
 if (retakesSource !== 'refine_cuts') {
   console.error(`[plan_cut] WARNING: ${retakesFile} has no "source": "refine_cuts" tag — its cut ` +

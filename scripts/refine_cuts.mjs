@@ -24,8 +24,24 @@ if (vad.schemaVersion !== 2) {
   process.exit(1);
 }
 const { hop, regions, db, probs, probHop } = vad;
-const words = JSON.parse(fs.readFileSync(wordsFile, 'utf8'));
-const pairs = JSON.parse(fs.readFileSync(pairsFile, 'utf8'));
+// scripts/transcribe_groq.py (the Groq transcription engine, Шаг 6 п.1)
+// writes words.json wrapped as {"words": [...]}, not a bare array — every
+// Python consumer in this skill already unwraps that defensively
+// (cut_silence.py, remap_words.py, find_repeat_candidates.py's
+// load_words()), but this script did not, so the Groq path broke
+// everything downstream of transcription. Found alongside the pairs.json
+// unwrap bug, 2026-08-29 — same class of defect, same fix shape.
+const rawWords = JSON.parse(fs.readFileSync(wordsFile, 'utf8'));
+const words = Array.isArray(rawWords) ? rawWords : (rawWords.words ?? []);
+// SKILL.md Шаг 6 п.5 instructs writing pairs.json as {"pairs": [[dropIdx,
+// keepIdx], ...]} — a wrapped object, not a bare array. This used to read
+// the parsed JSON directly as `pairs` and iterate it, which throws
+// ("pairs is not iterable") the moment a real pairs.json is written per
+// that spec — found by Андрей, 2026-08-29, never hit before because every
+// synthetic test (including this skill's own) wrote a bare array. Accept
+// either shape: unwrap `.pairs` off an object, use an array as-is.
+const rawPairs = JSON.parse(fs.readFileSync(pairsFile, 'utf8'));
+const pairs = Array.isArray(rawPairs) ? rawPairs : (rawPairs.pairs ?? []);
 
 const PREROLL = 0.06;   // keep this much run-up before the kept word
 const PROB_PLATEAU_EPS = 0.05;   // probs within this of the local min count as "the same minimum"
