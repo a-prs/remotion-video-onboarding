@@ -215,9 +215,144 @@ function testGroqShapedWordsJson() {
   if (status !== 0) console.log(stdout);
 }
 
+// ---------------------------------------------------------------------------
+// Test F — V6 false positive from an inflated raw `end`. Whisper routinely
+// stretches a word's reported end out to the next word's start, including
+// across a real pause — the same DTW-lag class that produced V1/V3 false
+// positives before. Found live 2026-08-29 (parallel test session): 15 false
+// V6 hits on real material, e.g. "которая" reported as 230.72-240.29 (9.57s
+// for one word), verified present-and-correct by reassembling actual audio.
+// V6 must judge by the TIGHTER of raw-end / next-word-start / acoustic
+// support, not the possibly-inflated raw end alone.
+// ---------------------------------------------------------------------------
+function testInflatedEndNotFalsePositive() {
+  console.log('\n[F] V6 does not false-positive on an inflated raw `end` ("которая" class)');
+  const wd = mkWorkDir('inflatedend');
+  writeJson(path.join(wd, 'vad.json'), {
+    schemaVersion: 2, engine: 'energy', duration: 241.0, hop: 0.01, energyHop: 0.01, db: [],
+    // a real pause [235.0, 235.9] splits this into two kept spans — needed so
+    // "которая"'s inflated end (240.29) actually reaches past its own span's
+    // boundary, reproducing the false positive (a single span covering
+    // everything, like Test D, wouldn't exercise this).
+    fine: [[0.0, 235.0], [235.9, 241.0]],
+    regions: [[0.0, 235.0], [235.9, 241.0]],
+    // the word's REAL acoustic footprint is 230.70-230.95 — nothing like the
+    // 9.57s the raw `end` claims.
+    support: [[0.0, 235.0], [230.70, 230.95], [235.9, 241.0]],
+  });
+  const words = [
+    { word: 'которая', start: 230.72, end: 240.29 },     // inflated raw end
+    { word: 'следующее', start: 236.20, end: 236.50 },   // first real word after the pause
+  ];
+  const wordsFile = path.join(wd, 'words.json');
+  writeJson(wordsFile, words);
+  const retakesFile = path.join(wd, 'retakes.json');
+  writeJson(retakesFile, { cuts: [], source: 'refine_cuts', schemaVersion: 2 });
+
+  const { plan, status, stdout } = runPlanCut(wd, wordsFile, retakesFile);
+  assert(status === 0, 'plan_cut exits 0 (no VERIFY FAILED — the inflated end is not a real defect)');
+  assert(plan?.meta?.wordsTruncatedByCut === 0, `V6: zero words truncated (got ${plan?.meta?.wordsTruncatedByCut})`);
+  const outWords = plan?.words?.map((w) => w.word) ?? [];
+  assert(outWords.includes('которая'), `"которая" survives in the output (got: ${JSON.stringify(outWords)})`);
+  if (status !== 0) console.log(stdout);
+}
+
+// ---------------------------------------------------------------------------
+// Test G — control: V6 must still catch a GENUINE truncation (no acoustic
+// support, next word right at the boundary) — the tightened check must not
+// have traded false positives for a blind spot.
+// ---------------------------------------------------------------------------
+function testGenuineTruncationStillCaught() {
+  console.log('\n[G] V6 still catches a genuine truncation (control, must not regress into a blind spot)');
+  const wd = mkWorkDir('genuinetrunc');
+  writeJson(path.join(wd, 'vad.json'), {
+    schemaVersion: 2, engine: 'energy', duration: 368.0, hop: 0.01, energyHop: 0.01, db: [],
+    fine: [[360.0, 368.0]], regions: [[360.0, 368.0]], support: [[360.0, 368.0]],
+  });
+  const words = [
+    { word: 'мышечной', start: 361.39, end: 362.03 },
+    { word: 'ткани', start: 362.03, end: 362.41 },   // deliberately clipped below
+    { word: 'это', start: 362.41, end: 362.93 },
+  ];
+  const wordsFile = path.join(wd, 'words.json');
+  writeJson(wordsFile, words);
+  const retakesFile = path.join(wd, 'retakes.json');
+  // a deliberately BAD boundary (not vad-snapped) starting mid-"ткани" —
+  // truncates it for real, no support/next-word cover-up available.
+  writeJson(retakesFile, { cuts: [[362.10, 366.05]], source: 'refine_cuts', schemaVersion: 2 });
+
+  const { plan, status, stdout } = runPlanCut(wd, wordsFile, retakesFile);
+  assert(status !== 0, 'plan_cut exits non-zero (VERIFY FAILED — this IS a real truncation)');
+  assert((plan?.meta?.wordsTruncatedByCut ?? 0) > 0, `V6 flags the genuine truncation (got ${plan?.meta?.wordsTruncatedByCut})`);
+  assert(/V6.*ткани/.test(stdout), 'stdout names "ткани" in the V6 failure');
+}
+
+// ---------------------------------------------------------------------------
+// Test H — V7 (informational, 6b from the report): a real speech chunk
+// inside a kept span with zero words flags as a possible hidden take. Must
+// NOT fail the pipeline (informational only, not yet run against real
+// material — see comment in plan_cut.mjs).
+// ---------------------------------------------------------------------------
+function testHiddenTakeFlagged() {
+  console.log('\n[H] V7 flags a speech chunk with zero words as a possible hidden take (informational, does not fail)');
+  const wd = mkWorkDir('hiddentake');
+  writeJson(path.join(wd, 'vad.json'), {
+    schemaVersion: 2, engine: 'energy', duration: 12.0, hop: 0.01, energyHop: 0.01, db: [],
+    // gap between the two chunks (0.1s) is well under GAP(0.7s) — they merge
+    // into ONE kept span, exactly the case where a text-based check has
+    // nothing to compare and a hidden second take goes unnoticed.
+    fine: [[10.0, 10.5], [10.6, 11.0]],
+    regions: [[10.0, 10.5], [10.6, 11.0]],
+    support: [[10.0, 10.5], [10.6, 11.0]],
+  });
+  const words = [{ word: 'test', start: 10.0, end: 10.5 }];  // covers only the first chunk
+  const wordsFile = path.join(wd, 'words.json');
+  writeJson(wordsFile, words);
+  const retakesFile = path.join(wd, 'retakes.json');
+  writeJson(retakesFile, { cuts: [], source: 'refine_cuts', schemaVersion: 2 });
+
+  const { plan, status, stdout } = runPlanCut(wd, wordsFile, retakesFile);
+  assert(status === 0, 'plan_cut exits 0 (V7 is informational, must not fail the pipeline)');
+  assert(plan?.meta?.possibleHiddenTakes === 1, `meta reports exactly 1 possible hidden take (got ${plan?.meta?.possibleHiddenTakes})`);
+  assert(/V7.*10\.6.*11\.00/.test(stdout) || /V7/.test(stdout), 'stdout surfaces the V7 note');
+}
+
+// ---------------------------------------------------------------------------
+// Test I — V8 (informational, 6c from the report): a word whose timestamp
+// straddles a real pause longer than 0.4s is flagged as unreliable. Must NOT
+// fail the pipeline.
+// ---------------------------------------------------------------------------
+function testWordStraddlingPauseFlagged() {
+  console.log('\n[I] V8 flags a word straddling a >0.4s pause as unreliable (informational, does not fail)');
+  const wd = mkWorkDir('straddle');
+  writeJson(path.join(wd, 'vad.json'), {
+    schemaVersion: 2, engine: 'energy', duration: 10.0, hop: 0.01, energyHop: 0.01, db: [],
+    fine: [[0.0, 5.0], [6.0, 10.0]],  // 1.0s real pause in between
+    regions: [[0.0, 5.0], [6.0, 10.0]], support: [[0.0, 5.0], [6.0, 10.0]],
+  });
+  const words = [
+    { word: 'straddler', start: 4.8, end: 6.2 },  // crosses the whole 1.0s pause
+    { word: 'clean', start: 6.3, end: 6.6 },      // fully inside one region, must NOT be flagged
+  ];
+  const wordsFile = path.join(wd, 'words.json');
+  writeJson(wordsFile, words);
+  const retakesFile = path.join(wd, 'retakes.json');
+  writeJson(retakesFile, { cuts: [], source: 'refine_cuts', schemaVersion: 2 });
+
+  const { plan, status, stdout } = runPlanCut(wd, wordsFile, retakesFile);
+  assert(status === 0, 'plan_cut exits 0 (V8 is informational, must not fail the pipeline)');
+  assert(plan?.meta?.wordsStraddlingAPause === 1, `meta reports exactly 1 straddling word (got ${plan?.meta?.wordsStraddlingAPause})`);
+  assert(/"straddler".*straddles/.test(stdout), 'stdout names "straddler" specifically');
+  assert(!/"clean".*straddles/.test(stdout), '"clean" (fully inside one region) is not flagged');
+}
+
 testWordProtection();
 testShortRetakesSurvive();
 testHallucinationsDontBlockCut();
+testInflatedEndNotFalsePositive();
+testGenuineTruncationStillCaught();
+testHiddenTakeFlagged();
+testWordStraddlingPauseFlagged();
 testNoTruncationAtRetakeBoundary();
 testGroqShapedWordsJson();
 

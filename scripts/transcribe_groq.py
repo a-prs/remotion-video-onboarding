@@ -88,6 +88,32 @@ def plan_chunks(audio_path: str, target_minutes: float) -> list:
     return [[bounds[i], bounds[i + 1]] for i in range(len(bounds) - 1)]
 
 
+DEDUP_WINDOW_S = 0.20  # real repeated speech on our material sat 0.28s+ apart —
+                       # Groq's own doubled-word artifact sits 7-87ms apart, so
+                       # this window separates the two cleanly without eating
+                       # a genuine stutter/repeat.
+
+
+def dedup_words(all_words: list) -> list:
+    """Groq occasionally emits the same word twice in a row with a tiny start
+    offset (7-87ms seen live, e.g. "при при одном одном и и том том же же") —
+    an artifact of its own decoding, not real repeated speech. Found live
+    2026-08-29 (9 doubled words in one chunk, visible in the raw response
+    JSON). Collapse a same-normalized-text word that starts within
+    DEDUP_WINDOW_S of the previous one; keep the first occurrence (its start
+    is the true onset)."""
+    out = []
+    for w in all_words:
+        if out:
+            prev = out[-1]
+            norm_prev = prev["word"].strip().lower()
+            norm_cur = w["word"].strip().lower()
+            if norm_prev == norm_cur and norm_cur and (w["start"] - prev["start"]) <= DEDUP_WINDOW_S:
+                continue
+        out.append(w)
+    return out
+
+
 def call_groq(chunk_path: str, api_key: str, model: str, language: str) -> dict:
     boundary = uuid.uuid4().hex
     body = io.BytesIO()
@@ -111,10 +137,18 @@ def call_groq(chunk_path: str, api_key: str, model: str, language: str) -> dict:
     body.write(b"\r\n")
     body.write(f"--{boundary}--\r\n".encode())
 
+    # Cloudflare sits in front of api.groq.com and blocks requests with no
+    # User-Agent (urllib's default identifies itself as "Python-urllib/x.y",
+    # which gets a bare 403/1010 before the request ever reaches Groq — the
+    # API key is never even checked). Found live 2026-08-29: a confirmed-valid
+    # key (verified via curl to /v1/models, HTTP 200) still got 403 through
+    # this script. A real User-Agent is all Cloudflare needs to pass it through.
     req = urllib.request.Request(
         GROQ_URL, data=body.getvalue(), method="POST",
         headers={"Authorization": f"Bearer {api_key}",
-                "Content-Type": f"multipart/form-data; boundary={boundary}"},
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "User-Agent": "remotion-video-onboarding-skill/1.0 (+https://github.com/a-prs/remotion-video-onboarding)",
+                "Accept": "application/json"},
     )
     try:
         with urllib.request.urlopen(req, timeout=300) as resp:
@@ -123,6 +157,16 @@ def call_groq(chunk_path: str, api_key: str, model: str, language: str) -> dict:
         detail = e.read().decode(errors="replace")[:500]
         if e.code == 401:
             print("Groq API key отклонён (401) — проверь $GROQ_API_KEY.", file=sys.stderr)
+        elif e.code == 403:
+            # NOT a key problem (a 401 covers that) — this is Cloudflare/WAF
+            # rejecting the request before Groq sees it (missing/blocked
+            # User-Agent, geo-block, or a transient edge rule). Telling the
+            # user to re-check their key here wastes their time on a red herring.
+            print("Groq API вернул 403 — это НЕ проблема ключа (ту ловит 401). Похоже на "
+                  "блокировку на уровне Cloudflare перед Groq (например, отсутствующий/"
+                  "заблокированный User-Agent). Проверь ключ отдельно curl'ом к "
+                  "https://api.groq.com/openai/v1/models — если там 200, ключ рабочий, "
+                  "дело не в нём.", file=sys.stderr)
         elif e.code == 413:
             print("Чанк всё ещё слишком большой для Groq (413) — уменьши --chunk-minutes.",
                   file=sys.stderr)
@@ -186,8 +230,14 @@ def main() -> int:
                     "confidence": None,
                 })
         all_words.sort(key=lambda w: w["start"])
+        all_words = dedup_words(all_words)
+        # Windows-hosted runs write this with the platform default encoding
+        # (cp1251 on a RU-locale Windows box) unless told otherwise, and Node's
+        # JSON.parse on the consumer side then throws UnicodeDecodeError on the
+        # first non-ASCII byte (0xd1 etc.) — found live 2026-08-29. Force utf-8
+        # explicitly; don't rely on the platform default.
         Path(args.out_words).write_text(
-            json.dumps({"words": all_words}, ensure_ascii=False, indent=2))
+            json.dumps({"words": all_words}, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"[transcribe_groq] wrote {args.out_words} ({len(all_words)} words)",
               file=sys.stderr)
     finally:

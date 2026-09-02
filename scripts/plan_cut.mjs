@@ -209,7 +209,7 @@ const wordCategory = new Map();   // word index -> 'kept' | 'retake' | 'confirme
 words.forEach((w, i) => {
   if (wordInRetake(w)) { wordCategory.set(i, 'retake'); return; }
   const idx = owner(evidenceInterval(w), final);
-  if (idx !== -1) { kept[idx].words.push(w); wordCategory.set(i, 'kept'); return; }
+  if (idx !== -1) { kept[idx].words.push({ ...w, _i: i }); wordCategory.set(i, 'kept'); return; }
   wordCategory.set(i, acousticSupport(w) ? 'confirmed-lost' : 'unconfirmed');
 });
 
@@ -226,8 +226,26 @@ kept = kept.filter((k) => k.words.length > 0);
 // the "ткани"/"интересней" truncation, just not caught upstream this time.
 // This is what actually renders (cutWords below clips silently to the
 // segment), so it must fail exactly as loud as V1/V3, not slip through.
+//
+// The naive check compared against the word's raw `end`, but Whisper
+// routinely inflates a word's reported end out to the NEXT word's start —
+// including across a real pause — the same DTW-lag class that produced V1/V3
+// false positives. Found live 2026-08-29 (parallel test session): 15 false
+// V6 hits, all against words with a multi-second raw `end` ("которая"
+// 230.72-240.29, 9.57s for one word) that were verified present-and-correct
+// by reassembling the actual rendered audio. Compare against the TIGHTER of
+// (a) the raw end, (b) the next word's start (a real word can't run past
+// where the next one begins), and (c) an acoustically-confirmed edge when
+// support() has one — not the possibly-inflated raw end alone.
 const TRUNC_TOL = PAD;   // same slack already baked into a pause-cut's breathing room
 const v6problems = [];
+const effectiveSpan = (w) => {
+  const nextStart = w._i + 1 < words.length ? words[w._i + 1].start : Infinity;
+  const sup = acousticSupport(w);
+  const effEnd = sup ? Math.min(w.end, nextStart, sup[1] + TRUNC_TOL) : Math.min(w.end, nextStart);
+  const effStart = sup ? Math.max(w.start, sup[0] - TRUNC_TOL) : w.start;
+  return [effStart, Math.max(effStart, effEnd)];
+};
 
 let acc = 0;
 const segsOut = [];
@@ -236,8 +254,9 @@ for (const k of kept) {
   const at = acc;
   segsOut.push([+k.a.toFixed(3), +k.b.toFixed(3)]);
   for (const w of k.words) {
-    if (w.start < k.a - TRUNC_TOL || w.end > k.b + TRUNC_TOL) {
-      v6problems.push(`"${w.word}" (${w.start.toFixed(2)}-${w.end.toFixed(2)}) partially outside its kept span [${k.a.toFixed(2)}, ${k.b.toFixed(2)}]`);
+    const [effStart, effEnd] = effectiveSpan(w);
+    if (effStart < k.a - TRUNC_TOL || effEnd > k.b + TRUNC_TOL) {
+      v6problems.push(`"${w.word}" (${w.start.toFixed(2)}-${w.end.toFixed(2)}, effective ${effStart.toFixed(2)}-${effEnd.toFixed(2)}) partially outside its kept span [${k.a.toFixed(2)}, ${k.b.toFixed(2)}]`);
     }
     const start = at + Math.max(0, w.start - k.a);
     const end = at + Math.min(k.b - k.a, w.end - k.a);
@@ -284,6 +303,48 @@ words.forEach((w, i) => {
   if (cat === 'unconfirmed') v4unconfirmed.push(`"${w.word}" at ${w.start.toFixed(2)}s (no acoustic support — possible ASR hallucination)`);
 });
 
+// V7 (informational) — every REAL speech chunk (`fine`) inside a kept span
+// must own at least one transcribed word. Zero words there means Whisper
+// silently merged a whole extra take into a neighboring phrase's word (an
+// inflated `end` swallowing a separate later region of real speech) — a
+// class no pairs.json/text-based duplicate check can ever see, because no
+// duplicate TEXT exists; the "duplicate" never made it into the transcript
+// at all. Reported live 2026-08-29 (three such takes found on real material,
+// e.g. "Немного истории", none caught by any existing check). Informational
+// only — this check has not been run against real material yet, and a noisy
+// false-positive check is worse than a silent gap (see Andrey's report,
+// 2026-08-29): don't fail the pipeline on it until it's proven trustworthy.
+const v7empty = [];
+for (const k of kept) {
+  for (const [fs_, fe] of fine) {
+    if (fe <= k.a + 0.02 || fs_ >= k.b - 0.02) continue;  // region isn't (meaningfully) inside this kept span
+    const covered = k.words.some((w) => w.end > fs_ + 0.02 && w.start < fe - 0.02);
+    if (!covered) {
+      v7empty.push(`speech chunk [${fs_.toFixed(2)}, ${fe.toFixed(2)}] inside kept span ` +
+        `[${k.a.toFixed(2)}, ${k.b.toFixed(2)}] has ZERO words — possible hidden take merged into a neighboring word`);
+    }
+  }
+}
+
+// V8 (informational) — a word's [start,end] must not straddle a real pause
+// longer than ~0.4s. A timestamp that crosses a pause that long is lying
+// about what it covers (Whisper stretched one word's span across a real
+// silence into whatever comes next) — exactly the mechanism behind the V6
+// false positives AND the hidden-take class V7 looks for. Same
+// informational-only caveat as V7 — not yet run against real material.
+const PAUSE_STRADDLE_MIN = 0.4;
+const v8straddling = [];
+for (const w of words) {
+  for (const [gs, ge] of gaps) {
+    if (ge - gs <= PAUSE_STRADDLE_MIN) continue;
+    if (w.start < ge - 0.02 && w.end > gs + 0.02) {
+      v8straddling.push(`"${w.word}" (${w.start.toFixed(2)}-${w.end.toFixed(2)}) straddles a ` +
+        `${(ge - gs).toFixed(2)}s pause [${gs.toFixed(2)}, ${ge.toFixed(2)}] — its timestamp is unreliable, may hide a merged take`);
+      break;
+    }
+  }
+}
+
 // V5 — words kept, broken down by reason instead of one opaque ratio.
 const counts = { total: words.length, kept: 0, retake: 0, unconfirmed: 0, confirmedLost: 0 };
 for (const cat of wordCategory.values()) {
@@ -305,6 +366,8 @@ fs.writeFileSync(outFile, JSON.stringify({
     spansClippedByWordProtection: clippedByProtection,
     emptySpansDropped, shortSegmentsAgainstWall: shortAgainstWall.length,
     wordsTruncatedByCut: v6problems.length,
+    possibleHiddenTakes: v7empty.length,
+    wordsStraddlingAPause: v8straddling.length,
     wordCounts: counts,
   },
 }, null, 2));
@@ -326,6 +389,14 @@ if (emptySpansDropped) console.log(`dropped ${emptySpansDropped} speech-less spa
 if (shortAgainstWall.length) {
   console.log(`${shortAgainstWall.length} segment(s) shorter than ${MIN_SEG}s squeezed between two retake walls, left as-is:`);
   for (const [s, e] of shortAgainstWall) console.log(`  [${s.toFixed(2)}, ${e.toFixed(2)}] (${(e - s).toFixed(2)}s)`);
+}
+if (v7empty.length) {
+  console.log(`V7 (informational, NOT yet proven safe — check manually) — ${v7empty.length} speech chunk(s) with zero words:`);
+  for (const p of v7empty) console.log('  ' + p);
+}
+if (v8straddling.length) {
+  console.log(`V8 (informational, NOT yet proven safe — check manually) — ${v8straddling.length} word(s) straddling a >${PAUSE_STRADDLE_MIN}s pause:`);
+  for (const p of v8straddling) console.log('  ' + p);
 }
 if (v4unconfirmed.length) {
   console.log(`V4 (informational, not a failure) — ${v4unconfirmed.length} word(s) removed with no acoustic support:`);
