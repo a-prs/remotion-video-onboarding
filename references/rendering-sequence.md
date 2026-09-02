@@ -23,9 +23,10 @@ ffprobe -v error -show_entries stream=codec_type,duration -of csv=p=0 cut.mp4
 
 ## Правильное решение — план монтажа как данные, без пересборки исходника
 
-Не резать файл вообще. `scripts/plan_cut.mjs` не трогает медиа — он читает `words.json` (word-level
-таймкоды) и `retakes.json` (границы дублей, уже выправленные `refine_cuts.mjs` — см.
-`audio-pipeline.md`, раздел про VAD/фальстарты) и считает JSON-план: какие куски ИСХОДНОГО файла
+Не резать файл вообще. `scripts/plan_cut.mjs` не трогает медиа — он читает `words_cut.json`
+(word-level таймкоды, уже скорректированные `fix_word_times.py`+`snap_cuts.py`) и `retakes.json`
+(границы дублей, `refine_cuts.mjs`+`snap_cuts.py` — см. `audio-pipeline.md`, раздел про
+VAD/фальстарты) и считает JSON-план: какие куски ИСХОДНОГО файла
 оставить (`segments`), на каких таймкодах нового таймлайна они окажутся (`offsets`), и слова,
 пересчитанные на новый таймлайн (`words`) — плюс сам себя проверяет (см. «Автопроверки» ниже).
 

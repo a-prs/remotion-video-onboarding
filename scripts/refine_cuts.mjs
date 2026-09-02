@@ -126,98 +126,26 @@ const boundaryBefore = (prev, word) => {
   return { gap: m === null ? null : [m, m], how: 'energy-min' };
 };
 
-// Cross-check the `end` boundary (where the kept/resumed take truly begins)
-// against the REAL speech map (vad.json's `regions`), not just ASR word
-// timestamps. boundaryBefore() above already narrows its search to a safe
-// zone between two words — but that zone's edges are still ASR
-// word.start/word.end, which can themselves be wrong (an ASR timestamp can
-// lag or lead real audio by up to ~1s+, confirmed on real material
-// 2026-08-29 by a parallel live-test session: 6 of 9 real boundaries needed
-// this correction even after the v.29.2 window-narrowing fix). If the
-// computed end lands INSIDE a region Silero confirms is real speech, that
-// speech is either (a) still the dropped take running on — end was chosen
-// too early — or (b) the true onset of the resumed take, whose reported
-// word.start undershoots reality — end was chosen too late. Tell them apart
-// by asking whether any KEPT-side word (index >= keepIdx) actually lands in
-// that region: if so it's (b), snap BACK to the region's own start; if not
-// it's (a), push FORWARD to the start of the NEXT region.
-const sortedRegions = regions.slice().sort((a, b) => a[0] - b[0]);
-const nextRegionStart = (t) => {
-  const r = sortedRegions.find(([s]) => s > t + 1e-3);
-  return r ? r[0] : null;
-};
-// Slack when asking "does this word belong to this region": a word's ASR
-// start can sit outside the Silero region's own edge by more than a few tens
-// of ms even when it plainly IS that region's content (found on real
-// material 2026-08-29 — a 0.05 tolerance was too tight and mis-classified a
-// genuine kept-side word as not belonging to its own region). Matches the
-// PAD "breathing room" constant plan_cut.mjs already uses for the same kind
-// of ASR/VAD edge slack.
-const REGION_SLACK = 0.15;
-const vadSnapEnd = (end, dropIdx, keepIdx) => {
-  const region = regionAt(end);
-  if (!region) return { end, how: null };
-  const inRegion = (i) => {
-    const w = words[i];
-    return w && w.start >= region[0] - REGION_SLACK && w.start < region[1] + REGION_SLACK;
-  };
-  const hasDropSide = words.some((_, i) => i >= dropIdx && i < keepIdx && inRegion(i));
-  const hasKeepSide = words.some((_, i) => i >= keepIdx && inRegion(i));
-  // A single region spanning BOTH sides means Silero found no pause anywhere
-  // between the drop and the resumption — the same "slitherly-merged, no
-  // pause at all" case boundaryBefore()'s contiguous-snap already solves
-  // correctly from word edges alone. There's no vad-detectable split to
-  // correct TO here, so leave the word-based boundary as computed (the
-  // "ткани"/"интересней" class, v.29.2 — don't regress it).
-  if (hasDropSide && hasKeepSide) return { end, how: null };
-  if (hasKeepSide) return { end: Math.max(0, region[0] - PREROLL), how: 'vad-snap-back' };
-  if (hasDropSide) {
-    const next = nextRegionStart(region[1] - 0.02);
-    if (next === null) return { end, how: null };  // nothing later to snap to — leave as computed
-    return { end: Math.max(0, next - PREROLL), how: 'vad-snap-forward' };
-  }
-  return { end, how: null };  // region touches neither side — leave alone
-};
-
-// vad-snap-forward means real speech continues past where ASR reported the
-// resumed take's onset — so the ASR word.start for keepIdx (and possibly a
-// few words after it, whose reported start still falls before the new end)
-// is itself wrong and would otherwise vanish from plan_cut.mjs's output
-// (its evidence interval, bounded by LOOKBACK=0.8s, may no longer reach the
-// segment). Found live 2026-08-29: "жирненько" reported at 166.50, real
-// audio at 168.4 (1.8s lag) — lost from subtitles/output entirely without
-// this. Fix: retime the affected words by distributing them proportionally
-// (by their own original durations) across [newEnd, firstTrustworthyWord).
-// A "trustworthy" word is the first one at/after keepIdx whose reported
-// start already sits past the new end — nothing to correct there.
-const retimedWords = [];
-const retimeAfterSnap = (end, keepIdx) => {
-  let j = keepIdx;
-  while (j < words.length && words[j].start < end) j++;
-  if (j === keepIdx || j >= words.length) return;  // nothing to fix, or no anchor to bound the fix
-  const anchorStart = words[j].start;
-  const span = anchorStart - end;
-  if (span <= 0) return;
-  const affected = words.slice(keepIdx, j);
-  const totalDur = affected.reduce((s, w) => s + Math.max(0.01, w.end - w.start), 0);
-  let cursor = end;
-  for (const w of affected) {
-    const dur = Math.max(0.01, w.end - w.start);
-    const share = totalDur > 0 ? (dur / totalDur) * span : span / affected.length;
-    const newStart = +cursor.toFixed(3);
-    const newEnd = +Math.min(anchorStart, cursor + Math.max(share, 0.02)).toFixed(3);
-    retimedWords.push(`"${w.word}" ${w.start.toFixed(2)}-${w.end.toFixed(2)} -> ${newStart.toFixed(2)}-${newEnd.toFixed(2)}`);
-    w.start = newStart;
-    w.end = newEnd;
-    cursor = newEnd;
-  }
-};
+// 2026-09-02: the vad-cross-check that used to live here (vad-snap-forward/
+// back, plus a word-retiming pass) was REMOVED — a second live-test round
+// found a real crash in its region-membership priority logic (a keep word's
+// own ASR-reported start can itself land inside the WRONG region due to the
+// same DTW-lag this whole file exists to correct for, which made the "does
+// either side already touch this region" heuristic ambiguous and fell
+// through to a hard invariant failure instead of resolving). A separate,
+// independently validated script — scripts/snap_cuts.py — now owns this
+// correction: it decides region ownership by summing ACOUSTIC OVERLAP across
+// every word on each side (not a single word's point-in-range test), which
+// is strictly more robust, and additionally retimes words pulled across a
+// moved boundary and accepts spans/wordMoves for takes with no textual
+// duplicate (V7's blind spot). This file's output is now explicitly named
+// retakes.raw.json in the pipeline (SKILL.md Шаг 6 п.6) — a pre-snap
+// artifact snap_cuts.py (п.6-bis) always processes next. See CHANGELOG.md.
 
 const EPS = 1e-3;
 const out = [];
 const log = [];
 const boundaryProblems = [];
-const boundaryInfo = [];
 for (const [dropIdx, keepIdx] of pairs) {
   const drop = words[dropIdx];
   const keep = words[keepIdx];
@@ -234,28 +162,20 @@ for (const [dropIdx, keepIdx] of pairs) {
   // part of the dropped word we just found the exact edge of (the
   // "интересней" bug: b.how==='contiguous' but PREROLL still ate into it).
   const bEnd = b.gap ? b.gap[1] : keep.start;
-  let end = Math.max(start + 0.1, b.how === 'pause' ? bEnd - PREROLL : bEnd);
-  let endHow = b.how;
-  const snap = vadSnapEnd(end, dropIdx, keepIdx);
-  if (snap.how) {
-    end = Math.max(start + 0.1, snap.end);
-    endHow = snap.how;
-    if (snap.how === 'vad-snap-forward') retimeAfterSnap(end, keepIdx);
-  }
+  const end = Math.max(start + 0.1, b.how === 'pause' ? bEnd - PREROLL : bEnd);
   out.push([+start.toFixed(3), +end.toFixed(3)]);
   log.push(`${String(out.length).padStart(2)}  ${start.toFixed(2)} → ${end.toFixed(2)}   ` +
-    `drop "${drop.word}" (${a.how})   keep "${keep.word}" (${endHow})`);
+    `drop "${drop.word}" (${a.how})   keep "${keep.word}" (${b.how})`);
 
   // Invariant: the cut must fully contain the dropped range and must not
-  // clip either neighboring kept word. A violation here is invisible to
-  // plan_cut.mjs's V1/V3 (it trusts these boundaries as given) — print it
-  // exactly as loud, UNLESS the end boundary was corrected via vad-snap
-  // above: in that case the violation is against a lastDropped/keep ASR
-  // timestamp we already know is unreliable (that's WHY the snap fired —
-  // e.g. two ASR words overlapping each other, or an inflated `end` that
-  // swallowed a whole word), not a real defect in the chosen boundary.
-  // Report it as an informational note instead of failing the pipeline.
-  const isVadSnapped = endHow && endHow.startsWith('vad-snap');
+  // clip either neighboring kept word. Informational only (not exitCode=1)
+  // — this boundary is still built from ASR word timestamps, which real
+  // material has shown can be wrong by 1s+ (a genuinely clean word-edge
+  // boundary is not always possible from timestamps alone, e.g. two ASR
+  // words overlapping each other). scripts/snap_cuts.py (next pipeline
+  // step) re-derives the boundary from the real speech map when needed —
+  // this print is context for that step and for a human reading the log,
+  // not a pipeline gate.
   if (prevKept && start < prevKept.end - EPS) {
     boundaryProblems.push(`pair [${dropIdx},${keepIdx}]: start ${start.toFixed(3)} clips KEPT word ` +
       `"${prevKept.word}" (${prevKept.start.toFixed(2)}-${prevKept.end.toFixed(2)})`);
@@ -265,16 +185,12 @@ for (const [dropIdx, keepIdx] of pairs) {
       `"${drop.word}" (${drop.start.toFixed(2)}-${drop.end.toFixed(2)}) outside the cut`);
   }
   if (end < lastDropped.end - EPS) {
-    const msg = `pair [${dropIdx},${keepIdx}]: end ${end.toFixed(3)} leaves part of DROPPED word ` +
-      `"${lastDropped.word}" (${lastDropped.start.toFixed(2)}-${lastDropped.end.toFixed(2)}) outside the cut`;
-    (isVadSnapped ? boundaryInfo : boundaryProblems).push(
-      isVadSnapped ? `${msg}  [resolved via ${endHow} against vad.json — that word's own ASR timestamp is unreliable here]` : msg);
+    boundaryProblems.push(`pair [${dropIdx},${keepIdx}]: end ${end.toFixed(3)} leaves part of DROPPED word ` +
+      `"${lastDropped.word}" (${lastDropped.start.toFixed(2)}-${lastDropped.end.toFixed(2)}) outside the cut`);
   }
   if (end > keep.start + EPS) {
-    const msg = `pair [${dropIdx},${keepIdx}]: end ${end.toFixed(3)} clips KEPT word ` +
-      `"${keep.word}" (${keep.start.toFixed(2)}-${keep.end.toFixed(2)})`;
-    (isVadSnapped ? boundaryInfo : boundaryProblems).push(
-      isVadSnapped ? `${msg}  [resolved via ${endHow} against vad.json — that word's own ASR timestamp is unreliable here]` : msg);
+    boundaryProblems.push(`pair [${dropIdx},${keepIdx}]: end ${end.toFixed(3)} clips KEPT word ` +
+      `"${keep.word}" (${keep.start.toFixed(2)}-${keep.end.toFixed(2)})`);
   }
 }
 
@@ -282,31 +198,13 @@ fs.writeFileSync(outFile, JSON.stringify({
   cuts: out, source: 'refine_cuts', schemaVersion: 2,
 }, null, 2));
 
-// Words retimed above (vad-snap-forward case) must reach plan_cut.mjs, which
-// reads the same wordsFile independently — write the correction back rather
-// than changing the pipeline's argv shape. Preserve whichever shape this file
-// was read in (bare array vs Groq's {"words": [...]} wrapper).
-if (retimedWords.length) {
-  const payload = Array.isArray(rawWords) ? words : { ...rawWords, words };
-  fs.writeFileSync(wordsFile, JSON.stringify(payload, null, 2));
-}
-
 if (out.length === 0) {
-  console.log('no retake pairs — wrote an empty retakes.json (still tagged source: refine_cuts)');
+  console.log('no retake pairs — wrote an empty retakes.raw.json (still tagged source: refine_cuts)');
 } else {
   console.log(log.join('\n'));
   console.log(`total cut: ${out.reduce((s, [a, b]) => s + (b - a), 0).toFixed(1)}s`);
 }
-if (retimedWords.length) {
-  console.log(`\nretimed ${retimedWords.length} word(s) whose ASR timestamp undershot a vad-snapped boundary:`);
-  for (const p of retimedWords) console.log('  ' + p);
-}
-if (boundaryInfo.length) {
-  console.log('\nboundary note (resolved via vad.json, not a defect):');
-  for (const p of boundaryInfo) console.log('  ' + p);
-}
 if (boundaryProblems.length) {
-  console.error('\nBOUNDARY INVARIANT VIOLATED (must be empty):');
-  for (const p of boundaryProblems) console.error('  ' + p);
-  process.exitCode = 1;
+  console.log('\nboundary note (word-edge boundary only — scripts/snap_cuts.py resolves these against the real speech map next):');
+  for (const p of boundaryProblems) console.log('  ' + p);
 }

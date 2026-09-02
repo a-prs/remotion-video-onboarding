@@ -197,117 +197,11 @@ function testGroqShapedWordsJson() {
   if (status !== 0) console.log(stdout);
 }
 
-// ---------------------------------------------------------------------------
-// Test E — vad-snap-forward + word retiming. Even after Test A's fix, the
-// boundary is still built from ASR word timestamps, which can themselves be
-// wrong by 1s+. Here the computed end lands inside the DROPPED take's own
-// vad.json region (not a defect in the boundary logic, a defect in the ASR
-// timestamp it trusted) — must push forward to the real next region, and
-// retime the keep word whose reported start undershoots the real audio
-// (found live 2026-08-29 by a parallel test session: "жирненько" reported at
-// 166.50, real audio at 168.4 — lost from the output entirely without this).
-// ---------------------------------------------------------------------------
-function testVadSnapForwardWithRetiming() {
-  console.log('\n[E] end lands inside the DROPPED take\'s own region -> snap forward + retime the lagging keep word');
-  const wd = mkWorkDir('snapfwd');
-  const words = [
-    { word: 'штука', start: 159.9, end: 160.3 },       // 0 — always kept
-    { word: 'чувак', start: 163.0, end: 163.9 },       // 1 — drop starts (dropIdx=1)
-    { word: 'штуку', start: 164.0, end: 166.29 },      // 2 — lastDropped
-    { word: 'жирненько', start: 166.50, end: 166.65 }, // 3 — keep (keepIdx=3), ASR undershoots real audio by 1.8s
-    { word: 'печень', start: 168.50, end: 168.90 },    // 4 — trustworthy anchor, already past real boundary
-  ];
-  const wordsFile = path.join(wd, 'words.json');
-  writeJson(wordsFile, words);
-  const pairsFile = path.join(wd, 'pairs.json');
-  writeJson(pairsFile, { pairs: [[1, 3]] });
-  // boundaryBefore's acoustic-minimum search needs real energy data to find a
-  // point — a monotonically rising db across the search window puts the
-  // minimum at the window's start (166.29s), solidly inside the DROPPED
-  // take's own region [163.0, 166.3] — reproducing the real defect: the raw
-  // boundary is computed correctly by word-edge logic, but the WORD EDGE
-  // ITSELF (keep.start=166.50) is wrong, sitting inside real silence
-  // (166.3-168.3) rather than at the true onset (168.4-ish).
-  const hop = 0.01;
-  const db = Array.from({ length: 17001 }, (_, i) => i * 0.001);
-  writeJson(path.join(wd, 'vad.json'), {
-    schemaVersion: 2, engine: 'energy', duration: 170.0, hop, energyHop: hop, db,
-    regions: [[159.9, 160.3], [163.0, 166.3], [168.3, 169.0]],
-    fine: [[159.9, 160.3], [163.0, 166.3], [168.3, 169.0]],
-    support: [[159.9, 160.3], [163.0, 166.3], [168.3, 169.0]],
-  });
-
-  const { retakes, status, stdout } = runRefineCuts(wd, wordsFile, pairsFile);
-  assert(status === 0, 'refine_cuts exits 0 (vad-snap-forward resolves cleanly, no hard invariant failure)');
-  const [cut] = retakes?.cuts ?? [];
-  assert(!!cut, 'exactly one cut was produced');
-  if (cut) {
-    assert(Math.abs(cut[1] - 168.24) < 0.01, `end pushed forward to the real region start minus PREROLL (168.24), got ${cut[1]}`);
-  }
-  const rewordsRaw = JSON.parse(fs.readFileSync(wordsFile, 'utf8'));
-  const rewords = Array.isArray(rewordsRaw) ? rewordsRaw : rewordsRaw.words;
-  const zhirnenko = rewords.find((w) => w.word === 'жирненько');
-  assert(!!zhirnenko && Math.abs(zhirnenko.start - 168.24) < 0.01,
-    `"жирненько" retimed forward to the real boundary (168.24), got ${zhirnenko?.start}`);
-  assert(!!zhirnenko && Math.abs(zhirnenko.end - 168.50) < 0.01,
-    `"жирненько" retimed to end at the trustworthy anchor's start (168.50), got ${zhirnenko?.end}`);
-  const pechen = rewords.find((w) => w.word === 'печень');
-  assert(!!pechen && pechen.start === 168.50 && pechen.end === 168.90,
-    '"печень" (already-trustworthy anchor) is left untouched');
-  assert(/vad-snap-forward/.test(stdout), 'log mentions vad-snap-forward');
-  assert(/retimed 1 word/.test(stdout), 'log reports exactly 1 word retimed');
-  if (status !== 0) console.log(stdout);
-}
-
-// ---------------------------------------------------------------------------
-// Test F — vad-snap-back + softened invariant. An inflated ASR `end` on the
-// last dropped word can push the raw boundary past the true kept-take onset,
-// swallowing a real word whole (the [134,144] class from the same live
-// report: "по-разному." end inflated to 319.19, swallowing "При" 318.53-
-// 318.73 entirely). Must snap BACK to the real region's start, and the
-// resulting invariant "violation" against the (known-unreliable) inflated
-// ASR end must be an informational note, not a hard pipeline failure.
-// ---------------------------------------------------------------------------
-function testVadSnapBackSoftensInvariant() {
-  console.log('\n[F] end lands inside the KEPT take\'s own region (inflated ASR end swallowed a word) -> snap back, invariant note not a failure');
-  const wd = mkWorkDir('snapback');
-  const words = [
-    { word: 'штука', start: 99.0, end: 99.5 },          // 0 — always kept
-    { word: 'х', start: 100.0, end: 100.4 },            // 1 — drop starts (dropIdx=1)
-    { word: 'поразному', start: 100.5, end: 103.2 },    // 2 — lastDropped, ASR end INFLATED into the kept region
-    { word: 'При', start: 102.6, end: 102.9 },          // 3 — keep (keepIdx=3), real word almost swallowed whole
-    { word: 'делаем', start: 103.0, end: 103.4 },       // 4
-  ];
-  const wordsFile = path.join(wd, 'words.json');
-  writeJson(wordsFile, words);
-  const pairsFile = path.join(wd, 'pairs.json');
-  writeJson(pairsFile, { pairs: [[1, 3]] });
-  writeJson(path.join(wd, 'vad.json'), {
-    schemaVersion: 2, engine: 'energy', duration: 105.0, hop: 0.01, energyHop: 0.01, db: [],
-    regions: [[99.0, 99.5], [100.0, 102.0], [102.5, 106.0]],
-    fine: [[99.0, 99.5], [100.0, 102.0], [102.5, 106.0]],
-    support: [[99.0, 99.5], [100.0, 102.0], [102.5, 106.0]],
-  });
-
-  const { retakes, status, stdout } = runRefineCuts(wd, wordsFile, pairsFile);
-  assert(status === 0, 'refine_cuts exits 0 (vad-snap-back resolves cleanly, invariant note does not fail the run)');
-  const [cut] = retakes?.cuts ?? [];
-  assert(!!cut, 'exactly one cut was produced');
-  if (cut) {
-    assert(Math.abs(cut[1] - 102.44) < 0.01, `end snapped back to the real kept-region start minus PREROLL (102.44), got ${cut[1]}`);
-  }
-  assert(/vad-snap-back/.test(stdout), 'log mentions vad-snap-back');
-  assert(/boundary note \(resolved via vad\.json/.test(stdout), 'log shows the softened informational note');
-  assert(!/BOUNDARY INVARIANT VIOLATED/.test(stdout), 'the ASR-inflated-end violation is NOT reported as a hard failure');
-  if (status !== 0) console.log(stdout);
-}
 
 testContiguousBoundarySnap();
 testRealPauseUnaffected();
 testPairsJsonShape();
 testGroqShapedWordsJson();
-testVadSnapForwardWithRetiming();
-testVadSnapBackSoftensInvariant();
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : `${failures} FAILURE(S)`}`);
 process.exit(failures === 0 ? 0 : 1);
